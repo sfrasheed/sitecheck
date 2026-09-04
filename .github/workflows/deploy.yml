@@ -1,0 +1,86 @@
+name: Deploy
+
+# Pull requests are checked but never deployed. Pushes to main deploy, because
+# main is what is live — there is no staging Worker and pretending otherwise
+# would be worse than admitting it.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# One deploy at a time, and never cancel one halfway. A cancelled `wrangler
+# deploy` can leave the Worker on a version nobody chose.
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Lint and type-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # `wrangler types` regenerates worker-configuration.d.ts, which is
+      # gitignored — tsc cannot resolve the bindings without it.
+      - run: npx wrangler types
+
+      - run: npm run lint
+
+      # A type error must block the deploy. That is the whole point of running
+      # this before it.
+      - run: npm run build
+
+  deploy:
+    name: Deploy to Cloudflare
+    needs: verify
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          # account_id lives in wrangler.jsonc, so it is not a secret here.
+          command: deploy
+
+      # Prove the thing that was deployed is answering, rather than trusting
+      # that a successful upload means a working Worker.
+      - name: Check it answers
+        run: |
+          sleep 5
+          body=$(curl -sS --fail --max-time 20 https://sitecheck.srasheed.workers.dev/api/health)
+          echo "$body"
+          echo "$body" | grep -q '"ok":true' || { echo "::error::health check did not report ok"; exit 1; }
+
+# DATABASE MIGRATIONS ARE NOT RUN HERE, DELIBERATELY.
+#
+# `wrangler d1 migrations apply` against the live database is not a deploy step,
+# it is a data change, and it is not reversible by rolling the Worker back. A
+# migration that renames or drops something would run automatically on merge,
+# before anyone had looked at the diff in production terms.
+#
+# Apply them by hand, before merging the code that needs them:
+#
+#     npm run db:migrate:remote
+#
+# Forward-only SQL and an additive-by-habit schema make that a small job. If
+# this ever becomes automated, it needs its own approval gate — not a step
+# bolted onto this one.
