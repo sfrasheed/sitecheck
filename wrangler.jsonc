@@ -1,0 +1,50 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "sitecheck",
+	"account_id": "2b72b64c82c248a4069a7f6ef814abe3",
+	"main": "worker/index.ts",
+	"compatibility_date": "2026-08-25",
+	"observability": { "enabled": true },
+	"upload_source_maps": true,
+
+	/**
+	 * No `assets` block, deliberately. Site Check has no user interface — the
+	 * office reads the review on the monday item, where the photos already are.
+	 * A second place to look at the same job would be a worse product, not a
+	 * more complete one.
+	 *
+	 * No Cloudflare Access either, and that is the point of the split: this
+	 * Worker is reached by a Power Automate flow and a monday webhook, never by
+	 * a person with a browser. Its endpoints authenticate with shared secrets
+	 * they present themselves. Deep Screen stays behind its login untouched.
+	 */
+
+	"vars": {
+		"REVIEW_MODEL": "claude-opus-5",
+
+		// The call-up board on the steedformaus account, and the only two
+		// columns this Worker may write. Named here rather than looked up:
+		// a column being present on the board is not the same as it being
+		// ours to write.
+		"MONDAY_BOARD_ID": "5031038127",
+		"VERDICT_COLUMN": "color_mm6wkf5h",
+		"WHY_COLUMN": "long_text_mm6ws202"
+	},
+
+	/** Its own database and its own bucket. Never Deep Screen's. */
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "sitecheck",
+			"database_id": "1ef2dbbc-8f9f-443c-a390-a8d9e466427e",
+			"migrations_dir": "migrations"
+		}
+	],
+
+	"r2_buckets": [
+		{
+			"binding": "PHOTOS",
+			"bucket_name": "sitecheck-photos"
+		}
+	]
+}

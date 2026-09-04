@@ -1,0 +1,27 @@
+{
+  "name": "sitecheck",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "npm run build && wrangler deploy",
+    "build": "tsc -b",
+    "lint": "oxlint",
+    "verify": "npm run lint && npm run build",
+    "db:migrate": "wrangler d1 migrations apply DB --local",
+    "db:migrate:remote": "wrangler d1 migrations apply DB --remote",
+    "db:reset": "rm -rf .wrangler/state/v3/d1 && wrangler d1 migrations apply DB --local",
+    "kb:load": "node scripts/load-kb.mjs",
+    "cf-typegen": "wrangler types"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.122.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "oxlint": "^1.75.0",
+    "typescript": "~6.0.2",
+    "wrangler": "^4.127.1"
+  }
+}

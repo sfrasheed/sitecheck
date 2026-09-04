@@ -1,0 +1,16 @@
+# Logs
+*.log
+npm-debug.log*
+
+node_modules
+.DS_Store
+
+# wrangler
+.wrangler
+.dev.vars*
+!.dev.vars.example
+worker-configuration.d.ts
+
+# Knowledge base copies never belong in this repository — upload them instead.
+kb/
+knowledge/

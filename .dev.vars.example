@@ -1,0 +1,23 @@
+# Local secrets. Copy to `.dev.vars` (gitignored) and fill in.
+# In production use `wrangler secret put <NAME>` — never commit real values.
+
+ANTHROPIC_API_KEY=
+
+# Read/write monday token, scoped to the call-up board.
+MONDAY_API_TOKEN=
+
+# Shared secret the SharePoint index flow presents when pushing folder names.
+# Unset means the push endpoint refuses everything, which is the safe default:
+# an unauthenticated index can be poisoned, and a poisoned index aims a review
+# at the wrong job's documents.
+PUSH_TOKEN=
+
+# Shared secret in the monday webhook's query string. monday cannot send custom
+# headers, so that whole URL is a credential.
+WEBHOOK_TOKEN=
+
+# The Power Automate document-fetch flow. The URL is itself a credential.
+FLOW_FETCH_URL=
+FLOW_FETCH_TOKEN=
+
+# Generate a shared secret with:  openssl rand -hex 24
