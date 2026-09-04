@@ -92,9 +92,37 @@ function namesFrom(payload: unknown): string[] | null {
   return names;
 }
 
+/**
+ * What arrived, for a caller that failed to authenticate.
+ *
+ * Header NAMES only, plus the length of the token that was presented. Never a
+ * value. A bare 401 from inside the Power Automate designer is close to
+ * undebuggable — you cannot see what the action actually sent — and the two
+ * real causes look identical from outside: the header never arrived, or it
+ * arrived with a stray newline. The length tells those apart without printing
+ * a secret into a flow's run history, which is retained.
+ */
+function whatArrived(request: Request): Record<string, unknown> {
+  const names = [...request.headers.keys()].sort();
+  const presented = request.headers.get('X-Push-Token');
+  return {
+    headersReceived: names,
+    tokenHeaderPresent: presented !== null,
+    tokenLength: presented === null ? 0 : presented.length,
+    tokenHasWhitespace: presented === null ? false : presented !== presented.trim(),
+  };
+}
+
 export async function receiveFolders(request: Request, env: Env): Promise<Response> {
   if (!authorised(request, env)) {
-    return ok({ error: 'not authorised' }, 401);
+    return ok(
+      {
+        error: 'not authorised',
+        expectedTokenLength: (env.PUSH_TOKEN ?? '').length,
+        ...whatArrived(request),
+      },
+      401,
+    );
   }
 
   const payload = await request.json().catch(() => null);
