@@ -44,6 +44,17 @@ function authorised(request: Request, env: Env): boolean {
  *   { "folders": [{ "Name": "a" }] }           — half mapped
  *   { "value": [{ "Name": "a" }] }             — SharePoint's raw REST response
  *   [{ "Name": "a" }]                          — a bare array
+ *   [{ "{Name}": "a", "{IsFolder}": true }]    — the SharePoint CONNECTOR's output
+ *
+ * That last shape is not a typo. The Power Automate SharePoint connector emits
+ * property names wrapped in literal braces — `{Name}`, `{IsFolder}`, `{Path}`.
+ * It is the output of "Get files (properties only)", which is the action worth
+ * using: it has a folder picker instead of an OData path, so there is no Uri to
+ * get wrong.
+ *
+ * Rows that say they are files are dropped. That action returns folders and
+ * files together, and a job folder index containing `order confirmation.pdf`
+ * would match addresses against filenames.
  */
 function namesFrom(payload: unknown): string[] | null {
   const rows = Array.isArray(payload)
@@ -62,11 +73,21 @@ function namesFrom(payload: unknown): string[] | null {
       names.push(row);
       continue;
     }
-    // SharePoint returns `Name`; be forgiving about casing rather than making
-    // the flow's odata mode load-bearing.
-    const candidate = (row as Record<string, unknown> | null)?.['Name']
-      ?? (row as Record<string, unknown> | null)?.['name'];
-    if (typeof candidate === 'string') names.push(candidate);
+    const record = row as Record<string, unknown> | null;
+    if (record === null) continue;
+
+    // The connector marks each row as folder or file. When it says file, skip:
+    // an index holding `order confirmation.pdf` would match addresses against
+    // filenames. A row that does not say either way is kept, because the REST
+    // shapes above only ever return folders.
+    const isFolder = record['{IsFolder}'] ?? record['IsFolder'];
+    if (isFolder === false) continue;
+
+    // `Name` from REST, `{Name}` from the connector. Casing is forgiven rather
+    // than making the flow's odata mode load-bearing.
+    const candidate =
+      record['{Name}'] ?? record['Name'] ?? record['name'] ?? record['{FilenameWithExtension}'];
+    if (typeof candidate === 'string' && candidate.trim() !== '') names.push(candidate);
   }
   return names;
 }
