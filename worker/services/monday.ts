@@ -211,10 +211,20 @@ export async function fileVerdict(
     [whyColumn]: safeWhy,
   });
 
+  // `create_labels_if_missing` is how NO REVIEW comes into existence. The status
+  // column's labels cannot be edited through the API — ColumnProperty accepts
+  // only title and description — so the label is created the first time a
+  // refusal is filed. The set of values that reach here is closed: three from
+  // the reader's schema and one literal, so nothing arbitrary can be minted.
   const written = await query<{ change_multiple_column_values: { id: string } | null }>(
     env,
     `mutation ($boardId: ID!, $itemId: ID!, $values: JSON!) {
-       change_multiple_column_values(board_id: $boardId, item_id: $itemId, column_values: $values) {
+       change_multiple_column_values(
+         board_id: $boardId
+         item_id: $itemId
+         column_values: $values
+         create_labels_if_missing: true
+       ) {
          id
        }
      }`,

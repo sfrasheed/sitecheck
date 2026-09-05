@@ -71,7 +71,10 @@ export async function receiveWebhook(request: Request, env: Env): Promise<Respon
     throw badRequest('the webhook carried no item id');
   }
 
-  return ingest(env, String(itemId));
+  // A submission that arrived on its own reviews itself, when that is switched
+  // on. A submission someone asked to be re-read does not — they asked for
+  // custody, not for a verdict, and a review costs real money.
+  return ingest(env, String(itemId), env.AUTO_REVIEW === 'on');
 }
 
 /**
@@ -80,7 +83,7 @@ export async function receiveWebhook(request: Request, env: Env): Promise<Respon
  * Idempotent by monday item id, because a webhook can fire twice and a second
  * delivery is not a second submission.
  */
-export async function ingest(env: Env, itemId: string): Promise<Response> {
+export async function ingest(env: Env, itemId: string, autoReview = false): Promise<Response> {
   const existing = await one<SubmissionRow>(
     env.DB,
     `SELECT id, address, resolution, folder FROM submissions WHERE monday_item_id = ?`,
@@ -126,7 +129,27 @@ export async function ingest(env: Env, itemId: string): Promise<Response> {
 
   const resolution = await resolve(env, submissionId, address, reference);
 
+  // Queued unconditionally, including when the folder did not resolve. A
+  // refusal costs nothing — it never reaches the reader — and the office needs
+  // to see that a submission was looked at and could not be judged, which is
+  // exactly the case a silent skip would hide.
+  let reviewId: string | null = null;
+  if (autoReview) {
+    reviewId = id('rev');
+    await run(
+      env.DB,
+      `INSERT INTO reviews (id, submission_id, status, requested_by, requested_at)
+       VALUES (?, ?, 'QUEUED', ?, ?)`,
+      reviewId,
+      submissionId,
+      'automatic — item created on the board',
+      nowIso(),
+    );
+    await env.REVIEWS.send({ reviewId });
+  }
+
   return ok({
+    reviewId,
     submissionId,
     itemId: submission.itemId,
     address,

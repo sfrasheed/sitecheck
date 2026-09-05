@@ -89,6 +89,11 @@ async function refuse(env: Env, reviewId: string, itemId: string, reason: string
     nowIso(),
     reviewId,
   );
+  // Filed as a verdict of its own so a refused submission is visible in a board
+  // view. Left blank it looks identical to one nobody has reviewed yet — and a
+  // refusal is precisely the case that needs a person to notice it.
+  await fileVerdict(env, itemId, 'NO REVIEW', reason);
+
   const posted = await postUpdate(env, itemId, refusalBody(reason));
   if (posted.ok) {
     await run(

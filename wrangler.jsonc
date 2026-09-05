@@ -23,7 +23,7 @@
 		"REVIEW_MODEL": "claude-opus-5",
 
 		// "on" makes a new submission review itself. Off until asked for.
-		"AUTO_REVIEW": "off",
+		"AUTO_REVIEW": "on",
 
 		// The call-up board on the steedformaus account, and the only two
 		// columns this Worker may write. Named here rather than looked up:
