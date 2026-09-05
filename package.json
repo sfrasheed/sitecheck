@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "npm run build && wrangler deploy",
-    "build": "tsc -b",
+    "build": "wrangler types && tsc -b",
     "lint": "oxlint",
     "verify": "npm run lint && npm run build",
     "db:migrate": "wrangler d1 migrations apply DB --local",
