@@ -20,6 +20,7 @@
 
 import type { Env } from '../env.ts';
 import { all, run } from '../store/db.ts';
+import { chooseDocuments, DOC_FOLDERS, type JobFile } from './documents.ts';
 import { nowIso } from '../lib/ids.ts';
 
 /** A folder name, not a path: no separators, no traversal, nothing clever. */
@@ -83,7 +84,7 @@ export async function indexState(env: Env): Promise<{ count: number; refreshedAt
 export type FetchedDocument = { name: string; bytes: Uint8Array };
 
 export type FetchResult =
-  | { ok: true; documents: FetchedDocument[] }
+  | { ok: true; documents: FetchedDocument[]; considered: number }
   | { ok: false; error: string };
 
 function decodeBase64(value: string): Uint8Array {
@@ -93,53 +94,78 @@ function decodeBase64(value: string): Uint8Array {
   return bytes;
 }
 
-/**
- * Ask the fetch flow for one job folder's documents.
- *
- * Returns the Order Confirmation and the highest-revision joinery drawing. An
- * empty result is not an error and must never be read as "nothing required" —
- * the caller decides what a missing Order Confirmation means, and the knowledge
- * base decides what that does to a verdict.
- */
-export async function fetchJobDocuments(env: Env, folder: string): Promise<FetchResult> {
+async function callFlow(env: Env, body: Record<string, string>): Promise<
+  { ok: true; data: Record<string, unknown> } | { ok: false; error: string }
+> {
   if (!env.FLOW_FETCH_URL || !env.FLOW_FETCH_TOKEN) {
     return { ok: false, error: 'no document fetch flow is configured' };
   }
-  if (!isBareFolderName(folder)) {
-    return { ok: false, error: 'that is not a plain folder name' };
-  }
-
   let response: Response;
   try {
     response = await fetch(env.FLOW_FETCH_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Push-Token': env.FLOW_FETCH_TOKEN },
-      body: JSON.stringify({ folder }),
+      body: JSON.stringify(body),
     });
   } catch (error) {
     return { ok: false, error: `could not reach the document flow: ${String(error)}` };
   }
+  if (!response.ok) return { ok: false, error: `the document flow returned ${response.status}` };
+  const data = (await response.json().catch(() => null)) as Record<string, unknown> | null;
+  if (!data) return { ok: false, error: 'the document flow returned something unexpected' };
+  return { ok: true, data };
+}
 
-  if (!response.ok) {
-    return { ok: false, error: `the document flow returned ${response.status}` };
+/**
+ * Get the job's quote and current drawing.
+ *
+ * Two calls: list what is in the job folder, then fetch only what was chosen.
+ * The choosing happens in `documents.ts`, in plain testable code, rather than
+ * in a Power Automate expression — and nothing depends on a hardcoded filename,
+ * because they vary (`order confirmation.pdf`, `Order Confirmation - Carr.PDF`,
+ * `<job> - Quote Rev. 1.pdf`).
+ *
+ * An empty result is not an error and must never be read as "nothing required".
+ * The knowledge base decides what a missing Order Confirmation does to a
+ * verdict; §1 says run the checklist only, and say so.
+ */
+export async function fetchJobDocuments(env: Env, folder: string): Promise<FetchResult> {
+  if (!isBareFolderName(folder)) return { ok: false, error: 'that is not a plain folder name' };
+
+  const listed = await callFlow(env, { folder });
+  if (!listed.ok) return listed;
+
+  const rows = Array.isArray(listed.data['files']) ? (listed.data['files'] as unknown[]) : [];
+  const files: JobFile[] = [];
+  for (const row of rows) {
+    const record = row as Record<string, unknown> | null;
+    if (!record) continue;
+    const name = record['{Name}'] ?? record['Name'] ?? record['name'];
+    const sub = record['subfolder'] ?? record['folder'];
+    if (typeof name !== 'string') continue;
+    const inFolder = DOC_FOLDERS.find((f) => f === sub);
+    if (!inFolder) continue;
+    files.push({ folder: inFolder, name });
   }
 
-  const body = (await response.json().catch(() => null)) as {
-    documents?: { name?: string; contentBase64?: string }[];
-  } | null;
-
-  if (!body || !Array.isArray(body.documents)) {
-    return { ok: false, error: 'the document flow returned something unexpected' };
+  const chosen = chooseDocuments(files);
+  const wanted = [...chosen.quotes, ...chosen.drawings];
+  if (wanted.length === 0) {
+    return { ok: true, documents: [], considered: files.length };
   }
 
   const documents: FetchedDocument[] = [];
-  for (const entry of body.documents) {
-    if (!entry?.name || !entry.contentBase64) continue;
+  for (const file of wanted) {
+    const got = await callFlow(env, { folder, subfolder: file.folder, file: file.name });
+    if (!got.ok) continue;
+    const content = got.data['contentBase64'] ?? got.data['$content'];
+    if (typeof content !== 'string') continue;
     try {
-      documents.push({ name: entry.name, bytes: decodeBase64(entry.contentBase64) });
+      documents.push({ name: `${file.folder}/${file.name}`, bytes: decodeBase64(content) });
     } catch {
-      return { ok: false, error: `${entry.name} did not arrive as readable base64` };
+      continue;
     }
   }
-  return { ok: true, documents };
+
+  return { ok: true, documents, considered: files.length };
 }

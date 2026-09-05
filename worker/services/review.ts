@@ -191,6 +191,15 @@ open cabinet is only wrong if the drawing says it should be closed.
 If no Order Confirmation was supplied, run the checklist only, do no scope
 matching, and set quoteWasRead to false.
 
+TAKE THE QUOTE'S REVISION FROM INSIDE THE DOCUMENT — the "Revision" and
+"Revision Date" printed on the Order Confirmation. NEVER from its filename. The
+quote file is overwritten in place, so its name sits at "Quote Rev. 1" while the
+document inside climbs; one job is filed as "Quote Rev. 1.pdf" and contains
+Revision 10. Reporting the filename's number would be confidently wrong on
+nearly every job. The joinery drawings are the opposite case: their revisions
+are real and old ones sit alongside new, so the highest-numbered drawing file is
+the current one and that is the one you have been given.
+
 Every line of your answer must be traceable to something visible in a
 photograph. If removing the photos would not change a finding, it does not
 belong in the answer.`;
