@@ -14,6 +14,20 @@ export interface Env {
   /** Site Check's own bucket, holding site photos and the documents read against them. */
   readonly PHOTOS: R2Bucket;
 
+  /**
+   * Reviews run here, not in the request. Work started from a request is cut
+   * off after about thirty seconds, and a review reads a dozen photographs
+   * against the whole knowledge base.
+   */
+  readonly REVIEWS: Queue<{ reviewId: string }>;
+
+  /**
+   * Whether a new submission reviews itself. Off by default: a review costs
+   * real money, and switching it on should be a decision someone made rather
+   * than a side effect of deploying.
+   */
+  readonly AUTO_REVIEW: string;
+
   /** The model the review runs on. */
   readonly REVIEW_MODEL: string;
 

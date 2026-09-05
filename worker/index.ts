@@ -22,6 +22,7 @@ import { fail, HttpError, ok } from './lib/http.ts';
 import type { Env } from './env.ts';
 import { getKbFile, listKb, putKbFile, retireKbFile } from './routes/kb.ts';
 import { ingest, receiveWebhook } from './routes/intake.ts';
+import { getReview, processReview, startReview, type ReviewMessage } from './routes/reviews.ts';
 import { previewResolution, receiveFolders } from './routes/sharepoint.ts';
 import { indexState, secretsMatch } from './services/sharepoint.ts';
 
@@ -46,6 +47,7 @@ const routes: Route[] = [
         folderIndex: index,
         documentFetch: env.FLOW_FETCH_URL ? 'configured' : 'not configured',
         webhook: env.WEBHOOK_TOKEN ? 'configured' : 'not configured',
+        autoReview: env.AUTO_REVIEW === 'on' ? 'on' : 'off',
       });
     },
   },
@@ -70,6 +72,23 @@ const routes: Route[] = [
     method: 'POST',
     pattern: /^\/api\/monday\/webhook$/,
     handler: ({ request, env }) => receiveWebhook(request, env),
+  },
+
+  // Reviews. Queued, because a review takes minutes.
+  {
+    method: 'POST',
+    pattern: /^\/api\/submissions\/([^/]+)\/review$/,
+    handler: async ({ request, env, params }) => {
+      const expected = env.PUSH_TOKEN;
+      const given = request.headers.get('X-Push-Token') ?? '';
+      if (!expected || !secretsMatch(given, expected)) return ok({ error: 'not authorised' }, 401);
+      return startReview(env, (request.headers.get('X-Actor') ?? '').trim(), params[0]!);
+    },
+  },
+  {
+    method: 'GET',
+    pattern: /^\/api\/reviews\/([^/]+)$/,
+    handler: ({ env, params }) => getReview(env, params[0]!),
   },
 
   // The knowledge base. What makes a site ready to measure lives here, not in
@@ -108,6 +127,24 @@ const routes: Route[] = [
 ];
 
 export default {
+  /**
+   * The review itself. A queue consumer is given minutes, where work started
+   * from a request is cut off after about thirty seconds.
+   */
+  async queue(batch: MessageBatch<ReviewMessage>, env: Env): Promise<void> {
+    for (const message of batch.messages) {
+      try {
+        await processReview(env, message.body.reviewId);
+      } catch (error) {
+        // processReview records its own failures. Anything reaching here is the
+        // consumer falling over; acknowledge regardless, because a silent second
+        // read costs money and settles nothing.
+        console.log('[queue] review failed outright:', String(error).slice(0, 200));
+      }
+      message.ack();
+    }
+  },
+
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 

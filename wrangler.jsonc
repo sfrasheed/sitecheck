@@ -22,6 +22,9 @@
 	"vars": {
 		"REVIEW_MODEL": "claude-opus-5",
 
+		// "on" makes a new submission review itself. Off until asked for.
+		"AUTO_REVIEW": "off",
+
 		// The call-up board on the steedformaus account, and the only two
 		// columns this Worker may write. Named here rather than looked up:
 		// a column being present on the board is not the same as it being
@@ -29,6 +32,23 @@
 		"MONDAY_BOARD_ID": "5031038127",
 		"VERDICT_COLUMN": "color_mm6wkf5h",
 		"WHY_COLUMN": "long_text_mm6ws202"
+	},
+
+	/**
+	 * The review runs here, not in the request. One review at a time per
+	 * invocation, and no blind retry: a read costs real money and the review row
+	 * already records what happened.
+	 */
+	"queues": {
+		"producers": [{ "queue": "sitecheck-reviews", "binding": "REVIEWS" }],
+		"consumers": [
+			{
+				"queue": "sitecheck-reviews",
+				"max_batch_size": 1,
+				"max_batch_timeout": 0,
+				"max_retries": 0
+			}
+		]
 	},
 
 	/** Its own database and its own bucket. Never Deep Screen's. */
