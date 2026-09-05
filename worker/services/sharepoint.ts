@@ -87,22 +87,50 @@ export type FetchResult =
   | { ok: true; documents: FetchedDocument[]; considered: number }
   | { ok: false; error: string };
 
-function decodeBase64(value: string): Uint8Array {
-  const binary = atob(value);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
-  return bytes;
+/**
+ * Fetch one file's bytes.
+ *
+ * The flow returns the file itself rather than a JSON envelope — the SharePoint
+ * connector's file content is binary, and Power Automate hands it straight back
+ * as the response body. That is simpler than wrapping it: no base64 round trip,
+ * no expression in the designer to get wrong, and roughly a third less to
+ * transfer.
+ */
+async function fetchOne(
+  env: Env,
+  folder: string,
+  subfolder: string,
+  file: string,
+): Promise<Uint8Array | null> {
+  if (!env.FLOW_FETCH_URL || !env.FLOW_FETCH_TOKEN) return null;
+  try {
+    const response = await fetch(env.FLOW_FETCH_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Push-Token': env.FLOW_FETCH_TOKEN },
+      body: JSON.stringify({ folder, subfolder, file }),
+    });
+    if (!response.ok) return null;
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    // A flow that terminated returns an error envelope with a 200 in some
+    // shapes; a PDF always starts %PDF-. Anything else is not a document.
+    if (bytes.length < 5) return null;
+    return bytes;
+  } catch {
+    return null;
+  }
 }
 
-async function callFlow(env: Env, body: Record<string, string>): Promise<
-  { ok: true; data: Record<string, unknown> } | { ok: false; error: string }
-> {
-  if (!env.FLOW_FETCH_URL || !env.FLOW_FETCH_TOKEN) {
-    return { ok: false, error: 'no document fetch flow is configured' };
+async function callFlow(
+  env: Env,
+  url: string | undefined,
+  body: Record<string, string>,
+): Promise<{ ok: true; data: Record<string, unknown> } | { ok: false; error: string }> {
+  if (!url || !env.FLOW_FETCH_TOKEN) {
+    return { ok: false, error: 'the document flows are not configured' };
   }
   let response: Response;
   try {
-    response = await fetch(env.FLOW_FETCH_URL, {
+    response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Push-Token': env.FLOW_FETCH_TOKEN },
       body: JSON.stringify(body),
@@ -132,7 +160,11 @@ async function callFlow(env: Env, body: Record<string, string>): Promise<
 export async function fetchJobDocuments(env: Env, folder: string): Promise<FetchResult> {
   if (!isBareFolderName(folder)) return { ok: false, error: 'that is not a plain folder name' };
 
-  const listed = await callFlow(env, { folder });
+  // `mode` is sent explicitly rather than letting the flow infer intent from
+  // whether `file` is empty. Power Automate compares an expression's result
+  // against the literal text in the other box, so booleans and numbers there
+  // silently match as strings; two plain words cannot.
+  const listed = await callFlow(env, env.FLOW_LIST_URL, { folder });
   if (!listed.ok) return listed;
 
   const rows = Array.isArray(listed.data['files']) ? (listed.data['files'] as unknown[]) : [];
@@ -140,10 +172,31 @@ export async function fetchJobDocuments(env: Env, folder: string): Promise<Fetch
   for (const row of rows) {
     const record = row as Record<string, unknown> | null;
     if (!record) continue;
-    const name = record['{Name}'] ?? record['Name'] ?? record['name'];
-    const sub = record['subfolder'] ?? record['folder'];
+    // Rows include the subfolders themselves. Skip them.
+    if (record['{IsFolder}'] === true || record['IsFolder'] === true) continue;
+
+    // `{Name}` from this connector has NO extension — `Scan2026-07-27_165251`,
+    // not `Scan2026-07-27_165251.pdf`. Only `{FilenameWithExtension}` carries
+    // it, and the whole choosing step filters on `.pdf`.
+    const name =
+      record['{FilenameWithExtension}'] ??
+      record['FilenameWithExtension'] ??
+      record['{Name}'] ??
+      record['Name'] ??
+      record['name'];
     if (typeof name !== 'string') continue;
-    const inFolder = DOC_FOLDERS.find((f) => f === sub);
+
+    // The flow lists the whole job folder in one action, nested items included,
+    // so which subfolder a file sits in is read off its path rather than being
+    // a separate field. That means one SharePoint action instead of one per
+    // subfolder — and no failure when a job has no Quote Details folder, which
+    // many do not.
+    const explicit = record['subfolder'];
+    const path = record['{Path}'] ?? record['Path'] ?? record['{FullPath}'] ?? '';
+    const haystack = typeof explicit === 'string' ? explicit : String(path);
+    const inFolder = DOC_FOLDERS.find((f) =>
+      haystack.toLowerCase().includes(f.toLowerCase()),
+    );
     if (!inFolder) continue;
     files.push({ folder: inFolder, name });
   }
@@ -156,15 +209,8 @@ export async function fetchJobDocuments(env: Env, folder: string): Promise<Fetch
 
   const documents: FetchedDocument[] = [];
   for (const file of wanted) {
-    const got = await callFlow(env, { folder, subfolder: file.folder, file: file.name });
-    if (!got.ok) continue;
-    const content = got.data['contentBase64'] ?? got.data['$content'];
-    if (typeof content !== 'string') continue;
-    try {
-      documents.push({ name: `${file.folder}/${file.name}`, bytes: decodeBase64(content) });
-    } catch {
-      continue;
-    }
+    const got = await fetchOne(env, folder, file.folder, file.name);
+    if (got !== null) documents.push({ name: `${file.folder}/${file.name}`, bytes: got });
   }
 
   return { ok: true, documents, considered: files.length };

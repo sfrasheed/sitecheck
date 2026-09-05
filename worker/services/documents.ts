@@ -53,19 +53,32 @@ export function revisionInName(name: string): number {
  * Drawings: the highest revision, because they are versioned by filename and
  * old revisions sit alongside new ones.
  *
+ * When nothing is named as a drawing at all — older jobs hold scans with names
+ * like `Scan2026-07-27_165251.pdf` — the PDFs in Job Details are taken instead,
+ * capped. Guessing from a filename is not possible there, so the reader is given
+ * the candidates and works out what they are. Sending one extra scan costs
+ * little; sending nothing means the drawing cannot be read at all, and §4 turns
+ * on reading the drawing before the photo.
+ *
  * Quotes: every candidate, capped. Which is current cannot be told from the
  * outside — the revision is inside the document — so the reader is given what
  * there is and told to establish the revision itself.
  */
-export function chooseDocuments(files: readonly JobFile[], quoteCap = 2): Chosen {
+export function chooseDocuments(files: readonly JobFile[], quoteCap = 2, drawingCap = 2): Chosen {
   const pdfs = files.filter((f) => isPdf(f.name));
 
-  const drawingCandidates = pdfs.filter((f) => looksLikeDrawing(f.name));
-  const best = drawingCandidates.reduce<JobFile | null>((winner, file) => {
-    if (winner === null) return file;
-    return revisionInName(file.name) > revisionInName(winner.name) ? file : winner;
-  }, null);
-  const drawings = best ? [best] : [];
+  const named = pdfs.filter((f) => looksLikeDrawing(f.name));
+  let drawings: JobFile[];
+  if (named.length > 0) {
+    const best = named.reduce((winner, file) =>
+      revisionInName(file.name) > revisionInName(winner.name) ? file : winner,
+    );
+    drawings = [best];
+  } else {
+    drawings = pdfs
+      .filter((f) => f.folder === 'Job Details' && !looksLikeQuote(f.name))
+      .slice(0, drawingCap);
+  }
 
   // Newest-looking first, so the cap keeps the most plausible candidates. Job
   // Details is preferred because that is the current convention.

@@ -21,3 +21,6 @@ FLOW_FETCH_URL=
 FLOW_FETCH_TOKEN=
 
 # Generate a shared secret with:  openssl rand -hex 24
+
+# The folder-listing flow. Separate from the fetch flow on purpose.
+FLOW_LIST_URL=

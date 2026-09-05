@@ -62,6 +62,15 @@ export interface Env {
   /** The document fetch flow's HTTP trigger URL. The URL is itself a credential. */
   readonly FLOW_FETCH_URL?: string;
 
+  /**
+   * The folder listing flow's HTTP trigger URL. A separate flow rather than a
+   * mode switch inside one: Power Automate compares an expression's result
+   * against the literal text in the other box, so a comparison that looks
+   * right can silently never match. Two flows with one job each have no
+   * comparison to get wrong.
+   */
+  readonly FLOW_LIST_URL?: string;
+
   /** Shared secret the Worker presents to the document fetch flow. */
   readonly FLOW_FETCH_TOKEN?: string;
 }
