@@ -34,6 +34,7 @@ const PHOTO = /\.(jpe?g|png|heic|heif|webp|gif)$/i;
 type SubmissionRow = {
   id: string;
   address: string | null;
+  reference: string | null;
   resolution: string;
   folder: string | null;
 };
@@ -82,15 +83,50 @@ export async function receiveWebhook(request: Request, env: Env): Promise<Respon
  *
  * Idempotent by monday item id, because a webhook can fire twice and a second
  * delivery is not a second submission.
+ *
+ * One thing is not idempotent, deliberately: a submission that failed to match
+ * a job folder is matched again. The folder index is a copy of SharePoint
+ * pushed in hourly, so it lags by construction, and a call-up that arrives in
+ * the gap between a job folder being created and the next push resolves to
+ * nothing through no fault of its own. Before this, that was permanent — there
+ * was no way back to `resolved` but to edit the row by hand. Now it costs a
+ * re-ingest.
+ *
+ * Submissions that already resolved are left alone. Re-matching one would mean
+ * a review's folder could change under it after the fact, and the record of
+ * what was read has to keep resolving.
+ *
+ * What this does NOT do is re-read the item from monday. The address and
+ * reference are quoted back from what was submitted, and custody of the photos
+ * was taken once, on purpose. An address typed wrong on the board is a
+ * different problem and needs a person, not a re-run.
  */
 export async function ingest(env: Env, itemId: string, autoReview = false): Promise<Response> {
   const existing = await one<SubmissionRow>(
     env.DB,
-    `SELECT id, address, resolution, folder FROM submissions WHERE monday_item_id = ?`,
+    `SELECT id, address, reference, resolution, folder FROM submissions WHERE monday_item_id = ?`,
     itemId,
   );
   if (existing) {
-    return ok({ submissionId: existing.id, alreadyHeld: true, resolution: existing.resolution });
+    if (existing.resolution === 'resolved') {
+      return ok({ submissionId: existing.id, alreadyHeld: true, resolution: existing.resolution });
+    }
+    const outcome = await resolve(
+      env,
+      existing.id,
+      existing.address ?? '',
+      existing.reference ?? '',
+    );
+    // No review is queued from here even when the webhook asked for one. A
+    // second delivery of the same item should not cost a second read, and a
+    // submission that has just become matchable is someone's decision to
+    // review, not the webhook's.
+    return ok({
+      submissionId: existing.id,
+      alreadyHeld: true,
+      wasResolution: existing.resolution,
+      resolution: outcome,
+    });
   }
 
   const read = await readSubmission(env, itemId);

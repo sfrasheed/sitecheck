@@ -21,7 +21,7 @@
 import type { Env } from '../env.ts';
 import { all, run } from '../store/db.ts';
 import { chooseDocuments, DOC_FOLDERS, type JobFile } from './documents.ts';
-import { nowIso } from '../lib/ids.ts';
+import { id, nowIso } from '../lib/ids.ts';
 
 /** A folder name, not a path: no separators, no traversal, nothing clever. */
 export const isBareFolderName = (value: string): boolean =>
@@ -71,14 +71,112 @@ export async function knownFolders(env: Env): Promise<string[]> {
   return rows.map((r) => r.name);
 }
 
-/** When the index was last refreshed, and how big it is. */
-export async function indexState(env: Env): Promise<{ count: number; refreshedAt: string | null }> {
-  const rows = await all<{ count: number; refreshed: string | null }>(
+/**
+ * Write down what a push was handed.
+ *
+ * `rowsReceived` is the count before files and blanks were dropped, because
+ * that is the number the flow's own paging settings cap — and therefore the
+ * number that gives a truncated push away.
+ */
+export async function recordPush(
+  env: Env,
+  counts: { rowsReceived: number; namesKept: number; namesAdded: number },
+): Promise<void> {
+  await run(
     env.DB,
-    `SELECT COUNT(*) AS count, MAX(last_seen_at) AS refreshed FROM job_folders`,
+    `INSERT INTO folder_index_pushes (id, at, rows_received, names_kept, names_added)
+     VALUES (?, ?, ?, ?, ?)`,
+    id('push'),
+    nowIso(),
+    counts.rowsReceived,
+    counts.namesKept,
+    counts.namesAdded,
+  );
+}
+
+export type IndexState = {
+  count: number;
+  refreshedAt: string | null;
+  /** When a name last entered the index for the first time. */
+  grewAt: string | null;
+  /** What the last push was handed, if any push has been recorded. */
+  lastPush: { at: string; rowsReceived: number; namesKept: number; namesAdded: number } | null;
+  /**
+   * Said in English when the evidence points at a capped flow, and null
+   * otherwise. Stated rather than left to be inferred, because the whole
+   * failure is that nobody thinks to go and count.
+   */
+  concern: string | null;
+};
+
+/**
+ * How the index is doing.
+ *
+ * Not merely how big it is. A count on its own cannot distinguish a complete
+ * index from a truncated one — see the 0005 migration for what that cost.
+ */
+export async function indexState(env: Env): Promise<IndexState> {
+  const rows = await all<{ count: number; refreshed: string | null; grew: string | null }>(
+    env.DB,
+    `SELECT COUNT(*) AS count, MAX(last_seen_at) AS refreshed, MAX(first_seen_at) AS grew
+       FROM job_folders`,
   );
   const row = rows[0];
-  return { count: row?.count ?? 0, refreshedAt: row?.refreshed ?? null };
+  const count = row?.count ?? 0;
+  const refreshedAt = row?.refreshed ?? null;
+  const grewAt = row?.grew ?? null;
+
+  const pushes = await all<{
+    at: string;
+    rows_received: number;
+    names_kept: number;
+    names_added: number;
+  }>(
+    env.DB,
+    `SELECT at, rows_received, names_kept, names_added
+       FROM folder_index_pushes ORDER BY at DESC LIMIT 1`,
+  );
+  const last = pushes[0];
+  const lastPush = last
+    ? {
+        at: last.at,
+        rowsReceived: last.rows_received,
+        namesKept: last.names_kept,
+        namesAdded: last.names_added,
+      }
+    : null;
+
+  return { count, refreshedAt, grewAt, lastPush, concern: concernAbout(lastPush, grewAt, refreshedAt) };
+}
+
+/**
+ * Two signatures of a capped flow, in the order they are worth believing.
+ *
+ * A round row count is the stronger tell: filing cabinets do not hold exactly
+ * a thousand folders, paging settings do. An index being refreshed without ever
+ * growing is weaker on its own — a quiet week looks the same — which is why it
+ * needs a day to pass before it is worth saying.
+ */
+function concernAbout(
+  lastPush: IndexState['lastPush'],
+  grewAt: string | null,
+  refreshedAt: string | null,
+): string | null {
+  const ROUND = [100, 200, 250, 500, 1000, 2000, 5000, 10000];
+  if (lastPush && ROUND.includes(lastPush.rowsReceived)) {
+    return `the last push carried exactly ${lastPush.rowsReceived} rows, which is a paging limit rather than a folder count — the flow is very likely truncating`;
+  }
+
+  if (grewAt && refreshedAt) {
+    const quietFor = Date.parse(refreshedAt) - Date.parse(grewAt);
+    const A_DAY = 24 * 60 * 60 * 1000;
+    if (Number.isFinite(quietFor) && quietFor > A_DAY) {
+      const days = Math.floor(quietFor / A_DAY);
+      return `the index has been refreshed for ${days} day${days === 1 ? '' : 's'} without a single new folder name arriving — either no jobs were created, or the flow is returning the same truncated slice`;
+    }
+  }
+
+  return null;
 }
 
 export type FetchedDocument = { name: string; bytes: Uint8Array };

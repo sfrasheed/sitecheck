@@ -14,6 +14,7 @@ import {
   indexState,
   knownFolders,
   recordFolders,
+  recordPush,
   secretsMatch,
 } from '../services/sharepoint.ts';
 
@@ -56,7 +57,7 @@ function authorised(request: Request, env: Env): boolean {
  * files together, and a job folder index containing `order confirmation.pdf`
  * would match addresses against filenames.
  */
-function namesFrom(payload: unknown): string[] | null {
+function namesFrom(payload: unknown): { received: number; names: string[] } | null {
   const rows = Array.isArray(payload)
     ? payload
     : Array.isArray((payload as { folders?: unknown })?.folders)
@@ -89,7 +90,9 @@ function namesFrom(payload: unknown): string[] | null {
       record['{Name}'] ?? record['Name'] ?? record['name'] ?? record['{FilenameWithExtension}'];
     if (typeof candidate === 'string' && candidate.trim() !== '') names.push(candidate);
   }
-  return names;
+  // `received` counts rows before any of the above dropped anything. That is
+  // the number the flow's paging settings cap, so it is the one worth keeping.
+  return { received: rows.length, names };
 }
 
 /**
@@ -126,26 +129,38 @@ export async function receiveFolders(request: Request, env: Env): Promise<Respon
   }
 
   const payload = await request.json().catch(() => null);
-  const names = namesFrom(payload);
-  if (names === null) {
+  const parsed = namesFrom(payload);
+  if (parsed === null) {
     throw badRequest(
       'send the SharePoint response body, or { "folders": ["..."] }',
       'expected an array of folder names, or of objects carrying a Name',
     );
   }
   const before = await indexState(env);
-  const accepted = await recordFolders(env, names);
+  const accepted = await recordFolders(env, parsed.names);
+  const added = (await indexState(env)).count - before.count;
+
+  // Written down before the state is read back, so `concern` is judged against
+  // this push rather than the one before it.
+  await recordPush(env, {
+    rowsReceived: parsed.received,
+    namesKept: accepted,
+    namesAdded: added,
+  });
   const after = await indexState(env);
 
-  // Report the shape of the change, not just success. A push that suddenly
-  // carries a fraction of the usual folders is the signature of a flow whose
-  // permissions narrowed, and it should be visible in the flow's own run
-  // history rather than discovered weeks later through failed matches.
+  // Report the shape of the change, not just success — and say plainly when the
+  // shape is wrong. A push that carries a fraction of the folders, or the same
+  // folders forever, is the signature of a capped or narrowed flow, and it
+  // should be visible in the flow's own run history rather than discovered
+  // weeks later through a submission that could not be matched.
   return ok({
+    rowsReceived: parsed.received,
     accepted,
     known: after.count,
-    added: after.count - before.count,
+    added,
     refreshedAt: after.refreshedAt,
+    concern: after.concern,
   });
 }
 
