@@ -41,6 +41,28 @@ export function secretsMatch(given: string, expected: string): boolean {
 }
 
 /**
+ * How many folder names go into one INSERT.
+ *
+ * A Worker invocation may make about a thousand subrequests, and every D1 query
+ * counts as one. Writing a row at a time meant a push of 1,300 folders spent
+ * its whole budget around the thousandth name and died mid-way with a 500 —
+ * having already committed the first ~999.
+ *
+ * That failure was invisible in the worst possible way. The names it managed to
+ * write looked like a healthy index, the flow reported an error nobody was
+ * reading, and the same truncated set arrived every hour because the same names
+ * always came first. It presented as a capped SharePoint listing and it was
+ * nothing of the sort.
+ *
+ * The chunk size is set by the tighter of two limits. D1 rejects a statement
+ * with more than a hundred bound parameters, and each name binds three, so
+ * thirty-two names per statement sits just under it. A push of 1,300 folders
+ * becomes about forty queries instead of 1,300 — an order of magnitude inside
+ * the subrequest budget, with room for the index to keep growing.
+ */
+const NAMES_PER_INSERT = 32;
+
+/**
  * Record what SharePoint currently holds.
  *
  * Names already known have their last_seen_at moved forward; names never seen
@@ -52,15 +74,20 @@ export async function recordFolders(env: Env, names: readonly string[]): Promise
   const seen = new Set<string>();
   for (const raw of names) {
     const name = raw.trim();
-    if (name === '' || seen.has(name)) continue;
-    seen.add(name);
+    if (name !== '') seen.add(name);
+  }
+
+  const unique = [...seen];
+  for (let from = 0; from < unique.length; from += NAMES_PER_INSERT) {
+    const chunk = unique.slice(from, from + NAMES_PER_INSERT);
+    const values = chunk.map(() => '(?, ?, ?)').join(', ');
+    const binds: string[] = [];
+    for (const name of chunk) binds.push(name, at, at);
     await run(
       env.DB,
-      `INSERT INTO job_folders (name, first_seen_at, last_seen_at) VALUES (?, ?, ?)
+      `INSERT INTO job_folders (name, first_seen_at, last_seen_at) VALUES ${values}
          ON CONFLICT(name) DO UPDATE SET last_seen_at = excluded.last_seen_at`,
-      name,
-      at,
-      at,
+      ...binds,
     );
   }
   return seen.size;
