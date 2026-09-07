@@ -15,7 +15,7 @@ import { id, nowIso } from '../lib/ids.ts';
 import { all, one, run } from '../store/db.ts';
 import { currentKb, fingerprint } from './kb.ts';
 import { review, type ReviewResult } from '../services/review.ts';
-import { refusalBody, updateBody, whySummary } from '../services/report.ts';
+import { failureBody, refusalBody, updateBody, whySummary } from '../services/report.ts';
 import { fetchJobDocuments } from '../services/sharepoint.ts';
 import { fileVerdict, postUpdate } from '../services/monday.ts';
 
@@ -34,18 +34,29 @@ type SubmissionRow = {
 
 type PhotoRow = { name: string; sha256: string };
 
+/**
+ * The image formats the reader can actually take, and nothing else.
+ *
+ * This used to map `.heic` to `image/jpeg`, which is a lie about the bytes.
+ * iPhones shoot HEIC by default, the API takes jpeg, png, gif and webp only,
+ * and mislabelling one as another does not convert it — the whole call came
+ * back `400 Could not process image`, and because a failed call posted nothing
+ * at all, the submission sat on the board looking unreviewed. One builder's
+ * single photo of 17 Bray Ave disappeared exactly that way.
+ *
+ * An unknown extension returns null rather than a plausible guess. Guessing is
+ * what caused this.
+ */
 const MEDIA: Record<string, string> = {
   jpg: 'image/jpeg',
   jpeg: 'image/jpeg',
   png: 'image/png',
   gif: 'image/gif',
   webp: 'image/webp',
-  heic: 'image/jpeg',
-  heif: 'image/jpeg',
 };
 
-const mediaTypeOf = (name: string): string =>
-  MEDIA[(name.split('.').pop() ?? '').toLowerCase()] ?? 'image/jpeg';
+const mediaTypeOf = (name: string): string | null =>
+  MEDIA[(name.split('.').pop() ?? '').toLowerCase()] ?? null;
 
 function toBase64(bytes: Uint8Array): string {
   let binary = '';
@@ -192,14 +203,39 @@ export async function processReview(env: Env, reviewId: string): Promise<void> {
   }
 
   const photos: { name: string; mediaType: string; base64: string }[] = [];
+  const unreadable: string[] = [];
   for (const p of photoRows) {
+    const mediaType = mediaTypeOf(p.name);
+    if (mediaType === null) {
+      unreadable.push(p.name);
+      continue;
+    }
     const object = await env.PHOTOS.get(`photos/${p.sha256}`);
     if (!object) continue;
     photos.push({
       name: p.name,
-      mediaType: mediaTypeOf(p.name),
+      mediaType,
       base64: toBase64(new Uint8Array(await object.arrayBuffer())),
     });
+  }
+
+  // 5 — something readable to look at. A format the reader cannot open is a
+  // fact about the files, like the three stops above, so it is settled here
+  // and named plainly. The bytes are kept: if conversion is added later, this
+  // submission can be reviewed without asking the builder for anything.
+  if (photos.length === 0) {
+    await refuse(
+      env,
+      reviewId,
+      itemId,
+      unreadable.length > 0
+        ? `The ${unreadable.length === 1 ? 'photograph' : `${unreadable.length} photographs`} supplied ` +
+          `(${unreadable.join(', ')}) ${unreadable.length === 1 ? 'is' : 'are'} in a format the review ` +
+          'cannot open. iPhones save photos as HEIC unless told otherwise — the same pictures re-sent as ' +
+          'JPEG will review normally. Nothing was judged.'
+        : 'The photographs could not be retrieved from storage, so nothing was judged.',
+    );
+    return;
   }
 
   // The Order Confirmation and drawings, if the fetch flow can reach them. Not
@@ -230,6 +266,22 @@ export async function processReview(env: Env, reviewId: string): Promise<void> {
       nowIso(),
       reviewId,
     );
+    // Said on the item, not just in the record. A review that fell over used to
+    // write this row and stop, which left the submission looking identical to
+    // one nobody had opened — and a failure is precisely the case that needs
+    // someone to notice. The reason is not shown to the office: an API error
+    // string is not English and tells a person nothing they can act on.
+    await fileVerdict(env, itemId, 'NO REVIEW', 'The review did not complete. Nobody has judged this submission yet.');
+    const said = await postUpdate(env, itemId, failureBody());
+    if (said.ok) {
+      await run(
+        env.DB,
+        `UPDATE reviews SET monday_update_id = ?, posted_at = ? WHERE id = ?`,
+        said.updateId,
+        nowIso(),
+        reviewId,
+      );
+    }
     return;
   }
 
@@ -246,7 +298,11 @@ export async function processReview(env: Env, reviewId: string): Promise<void> {
     return;
   }
 
-  const body = updateBody(result, { folder: submission.folder, photos: photos.length });
+  const body = updateBody(result, {
+    folder: submission.folder,
+    photos: photos.length,
+    unreadable,
+  });
   const fp = await fingerprint(kb);
 
   await run(

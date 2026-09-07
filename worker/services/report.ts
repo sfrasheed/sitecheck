@@ -33,7 +33,10 @@ const VERDICT_LEAD: Record<string, string> = {
  * `long_text` at around 2,000 characters silently and reads the truncated value
  * back as though it were whole.
  */
-export function updateBody(result: ReviewResult, context: { folder: string; photos: number }): string {
+export function updateBody(
+  result: ReviewResult,
+  context: { folder: string; photos: number; unreadable?: string[] },
+): string {
   const out: string[] = [];
 
   out.push(`<b>${esc(result.verdict)}</b>`);
@@ -48,6 +51,18 @@ export function updateBody(result: ReviewResult, context: { folder: string; phot
       context.photos === 1 ? '' : 's'
     }${result.quoteWasRead ? ', with the Order Confirmation' : '. No Order Confirmation was available'}.</i>`,
   );
+
+  // Said next to the coverage line, because it is the same kind of fact: what
+  // this verdict was and was not able to look at. A photograph nobody could
+  // open is not a finding and never touches the verdict.
+  const skipped = context.unreadable ?? [];
+  if (skipped.length > 0) {
+    out.push(
+      `<i>${skipped.length} further photograph${skipped.length === 1 ? '' : 's'} ` +
+        `(${esc(skipped.join(', '))}) could not be opened — iPhones save as HEIC unless told otherwise. ` +
+        `Re-sent as JPEG, ${skipped.length === 1 ? 'it' : 'they'} would be read too.</i>`,
+    );
+  }
 
   const blockers = result.reasons.filter((r) => r.tier === 'Hard blocker');
   const flags = result.reasons.filter((r) => r.tier !== 'Hard blocker');
@@ -141,6 +156,25 @@ export function whySummary(result: ReviewResult): string {
  * a verdict quietly filled in — is the failure this whole design exists to
  * prevent.
  */
+/**
+ * What gets posted when the review fell over rather than refused.
+ *
+ * The distinction matters to whoever reads it. A refusal is the app working:
+ * something about the submission made a verdict impossible and it says which.
+ * This is the app broken — nothing about the submission is wrong, so nobody
+ * should be chasing the builder. Deliberately carries no error text: an API
+ * message tells a person nothing they can act on, and it lives in the record.
+ */
+export function failureBody(): string {
+  return [
+    '<b>No review</b>',
+    'This review did not complete — something went wrong on our side, not with the submission.',
+    '',
+    '<i>No verdict has been reached and nothing needs chasing with the builder. ' +
+      'The submission is still held and can be reviewed again.</i>',
+  ].join('<br>');
+}
+
 export function refusalBody(reason: string): string {
   return [
     '<b>No review</b>',
