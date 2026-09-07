@@ -51,6 +51,19 @@
 		]
 	},
 
+	/**
+	 * Converting what a phone actually took.
+	 *
+	 * iPhones save HEIC by default and the reader takes jpeg, png, gif and webp
+	 * only. Without this a builder's photographs are captured, hashed, stored —
+	 * and then refused, which puts the work of re-sending them onto the builder
+	 * for something the app can do itself.
+	 *
+	 * Conversion is attempted and never assumed. If it fails, or if this binding
+	 * is unavailable, the submission is refused in English exactly as before.
+	 */
+	"images": { "binding": "IMAGES" },
+
 	/** Its own database and its own bucket. Never Deep Screen's. */
 	"d1_databases": [
 		{

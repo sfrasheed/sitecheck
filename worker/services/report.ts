@@ -59,8 +59,11 @@ export function updateBody(
   if (skipped.length > 0) {
     out.push(
       `<i>${skipped.length} further photograph${skipped.length === 1 ? '' : 's'} ` +
-        `(${esc(skipped.join(', '))}) could not be opened — iPhones save as HEIC unless told otherwise. ` +
-        `Re-sent as JPEG, ${skipped.length === 1 ? 'it' : 'they'} would be read too.</i>`,
+        `(${esc(skipped.join(', '))}) could not be opened, and converting ${
+          skipped.length === 1 ? 'it' : 'them'
+        } did not work either. Re-sent as JPEG, ${
+          skipped.length === 1 ? 'it' : 'they'
+        } would be read too.</i>`,
     );
   }
 

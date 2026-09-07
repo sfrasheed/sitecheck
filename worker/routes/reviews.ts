@@ -58,6 +58,29 @@ const MEDIA: Record<string, string> = {
 const mediaTypeOf = (name: string): string | null =>
   MEDIA[(name.split('.').pop() ?? '').toLowerCase()] ?? null;
 
+/**
+ * Turn a photograph the reader cannot take into one it can.
+ *
+ * Only reached for formats absent from MEDIA, which in practice means the HEIC
+ * an iPhone produces unless someone changed a setting. The original bytes are
+ * never touched: they are content-addressed and a run that read them has to
+ * keep resolving, so this converts on the way past and stores nothing.
+ *
+ * Returns null on any failure — an unsupported input, a binding that is not
+ * available, an empty result. Every one of those means the same thing to the
+ * caller, which then refuses in English rather than sending bytes the API will
+ * reject. Guessing a media type is what broke this in the first place.
+ */
+async function asJpeg(env: Env, body: ReadableStream): Promise<Uint8Array | null> {
+  try {
+    const result = await env.IMAGES.input(body).output({ format: 'image/jpeg' });
+    const bytes = new Uint8Array(await result.response().arrayBuffer());
+    return bytes.length > 0 ? bytes : null;
+  } catch {
+    return null;
+  }
+}
+
 function toBase64(bytes: Uint8Array): string {
   let binary = '';
   for (let i = 0; i < bytes.length; i += 0x8000) {
@@ -205,18 +228,29 @@ export async function processReview(env: Env, reviewId: string): Promise<void> {
   const photos: { name: string; mediaType: string; base64: string }[] = [];
   const unreadable: string[] = [];
   for (const p of photoRows) {
+    const object = await env.PHOTOS.get(`photos/${p.sha256}`);
+    if (!object) continue;
+
     const mediaType = mediaTypeOf(p.name);
-    if (mediaType === null) {
+    if (mediaType !== null) {
+      photos.push({
+        name: p.name,
+        mediaType,
+        base64: toBase64(new Uint8Array(await object.arrayBuffer())),
+      });
+      continue;
+    }
+
+    // A format the reader does not take. Convert it rather than making the
+    // builder re-send photographs they already sent. Success is not reported
+    // anywhere: a converted photograph is simply a photograph, and how it
+    // arrived is plumbing the office has no use for.
+    const jpeg = await asJpeg(env, object.body);
+    if (jpeg === null) {
       unreadable.push(p.name);
       continue;
     }
-    const object = await env.PHOTOS.get(`photos/${p.sha256}`);
-    if (!object) continue;
-    photos.push({
-      name: p.name,
-      mediaType,
-      base64: toBase64(new Uint8Array(await object.arrayBuffer())),
-    });
+    photos.push({ name: p.name, mediaType: 'image/jpeg', base64: toBase64(jpeg) });
   }
 
   // 5 — something readable to look at. A format the reader cannot open is a
@@ -230,9 +264,9 @@ export async function processReview(env: Env, reviewId: string): Promise<void> {
       itemId,
       unreadable.length > 0
         ? `The ${unreadable.length === 1 ? 'photograph' : `${unreadable.length} photographs`} supplied ` +
-          `(${unreadable.join(', ')}) ${unreadable.length === 1 ? 'is' : 'are'} in a format the review ` +
-          'cannot open. iPhones save photos as HEIC unless told otherwise — the same pictures re-sent as ' +
-          'JPEG will review normally. Nothing was judged.'
+          `(${unreadable.join(', ')}) could not be opened, and converting ${
+            unreadable.length === 1 ? 'it' : 'them'
+          } did not work either. The same pictures re-sent as JPEG will review normally. Nothing was judged.'
         : 'The photographs could not be retrieved from storage, so nothing was judged.',
     );
     return;
