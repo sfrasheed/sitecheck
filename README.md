@@ -58,6 +58,17 @@ review, because it reads as authoritative.
 Photo bytes are content-addressed, which turns the recycled-photo problem into a query: the same
 sha256 against a different address is one set re-submitted across several lots.
 
+## What happens to an iPhone photograph
+
+iPhones save HEIC unless someone changed a setting, and the reader takes jpeg, png, gif and webp.
+So a format it cannot open goes through the Images binding on the way past and is read as JPEG. The
+original bytes are never touched — they are content-addressed and a review that read them has to
+keep resolving — and no converted copy is kept.
+
+Success is reported nowhere: a converted photograph is a photograph. Failure refuses in English,
+naming the files, because the alternative is sending bytes the API rejects — which is what used to
+happen, and it took the whole review down silently.
+
 ## Why the folder index has to say when it is lying
 
 The index is a copy of SharePoint pushed in hourly by a flow. Being a copy, it lags — and being a

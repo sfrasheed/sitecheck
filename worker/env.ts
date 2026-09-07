@@ -15,6 +15,17 @@ export interface Env {
   readonly PHOTOS: R2Bucket;
 
   /**
+   * Converts a photograph the reader cannot take into one it can — in practice
+   * the HEIC an iPhone produces unless someone changed a setting.
+   *
+   * Optional, and read as optional at the call site too. If Images is not
+   * available on the account the conversion throws, the caller catches it, and
+   * the submission is refused in English rather than sending bytes the API will
+   * reject. Declaring it required would make a missing entitlement a crash.
+   */
+  readonly IMAGES?: ImagesBinding;
+
+  /**
    * Reviews run here, not in the request. Work started from a request is cut
    * off after about thirty seconds, and a review reads a dozen photographs
    * against the whole knowledge base.

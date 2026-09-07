@@ -72,6 +72,7 @@ const mediaTypeOf = (name: string): string | null =>
  * reject. Guessing a media type is what broke this in the first place.
  */
 async function asJpeg(env: Env, body: ReadableStream): Promise<Uint8Array | null> {
+  if (!env.IMAGES) return null;
   try {
     const result = await env.IMAGES.input(body).output({ format: 'image/jpeg' });
     const bytes = new Uint8Array(await result.response().arrayBuffer());
@@ -266,7 +267,7 @@ export async function processReview(env: Env, reviewId: string): Promise<void> {
         ? `The ${unreadable.length === 1 ? 'photograph' : `${unreadable.length} photographs`} supplied ` +
           `(${unreadable.join(', ')}) could not be opened, and converting ${
             unreadable.length === 1 ? 'it' : 'them'
-          } did not work either. The same pictures re-sent as JPEG will review normally. Nothing was judged.'
+          } did not work either. The same pictures re-sent as JPEG will review normally. Nothing was judged.`
         : 'The photographs could not be retrieved from storage, so nothing was judged.',
     );
     return;
