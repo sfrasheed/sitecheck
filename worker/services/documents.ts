@@ -30,8 +30,48 @@ const isPdf = (name: string) => /\.pdf$/i.test(name);
 
 const looksLikeDrawing = (name: string) => /joinery\s*drawings?/i.test(name);
 
+/**
+ * How much a filename sounds like the drawing, for jobs that never say
+ * "Joinery Drawings".
+ *
+ * `McDonald - 48 Hill Street Crafers West` holds four PDFs in Job Details:
+ * Curved Parts, Detail Drawings, Plans, Solid Surface Plans. Taking the first
+ * two in whatever order SharePoint listed them sent Curved Parts — a detail
+ * sheet — and left the plans behind.
+ *
+ * This orders candidates; it never excludes one. Nothing here decides what a
+ * drawing means, only which of several unnamed PDFs to hand over first when
+ * the cap will not fit them all.
+ */
+function drawingLikeness(name: string): number {
+  if (/\bsolid\s*surface\s*plans?\b/i.test(name)) return 4;
+  if (/\bplans?\b/i.test(name)) return 4;
+  if (/\bdrawings?\b/i.test(name)) return 3;
+  if (/\belevations?\b|\bsections?\b|\blayouts?\b/i.test(name)) return 2;
+  if (/\bdetails?\b/i.test(name)) return 1;
+  return 0;
+}
+
+/**
+ * Is this the Order Confirmation?
+ *
+ * Three namings, all live, because they accumulated rather than replaced each
+ * other:
+ *
+ *   <job> - Quote Rev. N.pdf          the current convention
+ *   order confirmation.pdf            older jobs
+ *   QU-58428 - <job>.pdf              the quote number straight off the system
+ *
+ * That third one is not a nicety. `McDonald - 48 Hill Street Crafers West`
+ * holds exactly one quote, `QU-58428 - ...pdf` in Quote Details, and without
+ * this the chooser saw no quote at all — so the review ran the checklist only
+ * and reported the Order Confirmation as unavailable, when it was sitting
+ * there. Every check that depends on what was priced was silently skipped.
+ */
 const looksLikeQuote = (name: string) =>
-  /(^|[^a-z])quote([^a-z]|$)/i.test(name) || /order\s*confirmation/i.test(name);
+  /(^|[^a-z])quote([^a-z]|$)/i.test(name) ||
+  /order\s*confirmation/i.test(name) ||
+  /(^|[^a-z0-9])qu-\s*\d/i.test(name);
 
 /**
  * The revision in a filename, or 0.
@@ -77,6 +117,7 @@ export function chooseDocuments(files: readonly JobFile[], quoteCap = 2, drawing
   } else {
     drawings = pdfs
       .filter((f) => f.folder === 'Job Details' && !looksLikeQuote(f.name))
+      .sort((a, b) => drawingLikeness(b.name) - drawingLikeness(a.name))
       .slice(0, drawingCap);
   }
 

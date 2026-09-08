@@ -69,6 +69,25 @@ tokens those are is worked out from the index, not from a list kept in the code.
 Measured on all 1,281 folders and a set of known-correct answers: no address resolves to the wrong
 folder, and an address with a typo in it now finds its job about four times in five instead of three.
 
+## Which file is the quote
+
+Three namings are live at once, because they accumulated rather than replaced each other:
+
+| | |
+|---|---|
+| `<job> - Quote Rev. N.pdf` | the current convention |
+| `order confirmation.pdf` | older jobs |
+| `QU-58428 - <job>.pdf` | the quote number straight off the system |
+
+Missing the third one was not cosmetic. `McDonald - 48 Hill Street Crafers West` holds exactly one
+quote, `QU-58428 - ...pdf`, and the chooser could not see it — so the review ran the checklist only
+and reported the Order Confirmation as unavailable while it sat in Quote Details. Every check that
+depends on what was priced was skipped, silently.
+
+The revision in a quote's filename is ignored on purpose. Quote files are overwritten in place, so
+the name sits at `Quote Rev. 1` while the document inside climbs — one job reads `Quote Rev. 1.pdf`
+and contains Revision 10. The reader takes the revision from inside the document.
+
 ## What happens to an iPhone photograph
 
 iPhones save HEIC unless someone changed a setting, and the reader takes jpeg, png, gif and webp.
