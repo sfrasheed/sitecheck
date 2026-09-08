@@ -79,6 +79,79 @@ export async function receiveWebhook(request: Request, env: Env): Promise<Respon
 }
 
 /**
+ * A person says which job this is.
+ *
+ * `ambiguous` and `unresolved` both mean the same thing in the design — a
+ * person chooses — and until now there was no way for a person to say so. The
+ * matcher would decline, correctly, and the submission would sit there with no
+ * route forward but an edit to the database by hand.
+ *
+ * Three things this deliberately does NOT do.
+ *
+ * It does not touch the address. The record quotes what the builder submitted,
+ * and `Lot 36 Sanctuary` is what arrived even when the job is Lot 306 — tidying
+ * it would misrepresent what we were given and hide why the match failed.
+ *
+ * It does not accept a folder the index has never seen. A free-text folder
+ * would let a review be aimed anywhere in SharePoint, which is the failure the
+ * matcher exists to prevent; a typo here would be indistinguishable from a
+ * choice.
+ *
+ * It does not review anything. Custody and a verdict are separate decisions,
+ * and a review costs real money.
+ */
+export async function chooseFolder(
+  request: Request,
+  env: Env,
+  itemId: string,
+): Promise<Response> {
+  // Unlike the stops the matcher settles, this is somebody's assertion about a
+  // real job, so it carries a name. Consistent with every other mutation.
+  const actor = (request.headers.get('X-Actor') ?? '').trim();
+  if (actor.length < 3) throw badRequest('say who you are', 'send X-Actor');
+
+  const body = (await request.json().catch(() => null)) as { folder?: unknown } | null;
+  const folder = typeof body?.folder === 'string' ? body.folder.trim() : '';
+  if (folder === '') throw badRequest('name the job folder', 'send { "folder": "..." }');
+
+  const existing = await one<SubmissionRow>(
+    env.DB,
+    `SELECT id, address, reference, resolution, folder FROM submissions WHERE monday_item_id = ?`,
+    itemId,
+  );
+  if (!existing) throw badRequest('no submission is held for that item');
+
+  const known = await one<{ name: string }>(
+    env.DB,
+    `SELECT name FROM job_folders WHERE name = ?`,
+    folder,
+  );
+  if (!known) {
+    throw badRequest(
+      'that folder is not in the index',
+      'the name has to match a SharePoint job folder exactly — check GET /api/sharepoint/resolve',
+    );
+  }
+
+  await run(
+    env.DB,
+    `UPDATE submissions SET resolution = 'resolved', folder = ?, resolution_detail = ?
+      WHERE id = ?`,
+    known.name,
+    `chosen by ${actor}; the address as submitted was "${existing.address ?? ''}"`,
+    existing.id,
+  );
+
+  return ok({
+    submissionId: existing.id,
+    wasResolution: existing.resolution,
+    resolution: 'resolved',
+    folder: known.name,
+    chosenBy: actor,
+  });
+}
+
+/**
  * Take custody of a submission.
  *
  * Idempotent by monday item id, because a webhook can fire twice and a second

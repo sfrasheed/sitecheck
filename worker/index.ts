@@ -21,7 +21,7 @@
 import { fail, HttpError, ok } from './lib/http.ts';
 import type { Env } from './env.ts';
 import { getKbFile, listKb, putKbFile, retireKbFile } from './routes/kb.ts';
-import { ingest, receiveWebhook } from './routes/intake.ts';
+import { chooseFolder, ingest, receiveWebhook } from './routes/intake.ts';
 import { getReview, processReview, startReview, type ReviewMessage } from './routes/reviews.ts';
 import { previewResolution, receiveFolders } from './routes/sharepoint.ts';
 import { indexState, secretsMatch } from './services/sharepoint.ts';
@@ -108,6 +108,21 @@ const routes: Route[] = [
     method: 'DELETE',
     pattern: /^\/api\/kb\/([^/]+)$/,
     handler: ({ request, env, params }) => retireKbFile(request, env, params[0]!),
+  },
+
+  // A person names the job folder for a submission the matcher would not
+  // decide. `ambiguous` means someone chooses; this is how they say so.
+  {
+    method: 'POST',
+    pattern: /^\/api\/submissions\/([^/]+)\/folder$/,
+    handler: async ({ request, env, params }) => {
+      const expected = env.PUSH_TOKEN;
+      const given = request.headers.get('X-Push-Token') ?? '';
+      if (!expected || !secretsMatch(given, expected)) {
+        return ok({ error: 'not authorised' }, 401);
+      }
+      return chooseFolder(request, env, params[0]!);
+    },
   },
 
   // Take custody of one named item, without waiting for a webhook. This is how

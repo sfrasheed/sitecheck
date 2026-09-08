@@ -40,6 +40,7 @@ curl -X POST http://localhost:8787/api/kb \
 | `POST /api/sharepoint/folders` | The hourly index push. Accepts SharePoint's raw response, or a list of names |
 | `GET /api/sharepoint/resolve?address=…` | Dry run: which job folder would this address find? |
 | `POST /api/monday/webhook` | Fired when the call-up form creates an item |
+| `POST /api/submissions/{itemId}/folder` | A person names the job folder the matcher would not decide. Needs `X-Actor` |
 | `POST /api/submissions/{itemId}/ingest` | The same, on demand, for submissions that already exist — and a re-match for one that failed to find its folder |
 | `GET` `POST` `/api/kb` · `GET` `DELETE` `/api/kb/{id}` | The knowledge base |
 
