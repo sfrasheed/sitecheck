@@ -58,6 +58,16 @@ review, because it reads as authoritative.
 Photo bytes are content-addressed, which turns the recycled-photo problem into a query: the same
 sha256 against a different address is one set re-submitted across several lots.
 
+Two things make the address side survive contact with a phone keyboard. A word of six letters or
+more is matched allowing one letter's difference, so `Santuary` finds `Sanctuary Ave` — never
+numbers, because `304` and `307` are two different houses. And a candidate has to share a token that
+actually identifies a job: `terrace` and `road` appear in hundreds of folder names, so `002-Sinks`
+no longer scores 0.80 against `2 finniss terrace` on the strength of a `2` and a `terrace`. Which
+tokens those are is worked out from the index, not from a list kept in the code.
+
+Measured on all 1,281 folders and a set of known-correct answers: no address resolves to the wrong
+folder, and an address with a typo in it now finds its job about four times in five instead of three.
+
 ## What happens to an iPhone photograph
 
 iPhones save HEIC unless someone changed a setting, and the reader takes jpeg, png, gif and webp.

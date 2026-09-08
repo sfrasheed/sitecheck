@@ -290,8 +290,13 @@ async function resolve(
       : outcome.status === 'conflict'
         ? `the address names ${outcome.folder} and the reference names ${outcome.referenceFolder}`
         : outcome.status === 'ambiguous'
-          ? `${outcome.candidates.length} folders matched equally well`
-          : 'nothing matched';
+          ? // Named, not counted. "5 folders matched equally well" is a dead
+            // end; the five names are a ten-second decision for whoever reads
+            // it, and they were being computed and thrown away.
+            `${outcome.candidates.length} folders matched equally well — ${outcome.candidates.join('; ')}`
+          : outcome.candidates.length > 0
+            ? `nothing matched the address; the reference points at ${outcome.candidates.join('; ')}`
+            : 'nothing matched';
 
   await run(
     env.DB,

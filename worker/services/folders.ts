@@ -46,6 +46,61 @@ const NOISE = new Set([
 /** A token that is only digits, with leading zeros stripped: `04` and `4` agree. */
 const isNumber = (token: string) => /^\d+$/.test(token);
 
+/**
+ * The shortest word worth forgiving a typo in.
+ *
+ * Below this, one letter is too much of the word: `st` and `at`, `bay` and
+ * `day`, `hay` and `hall` are different places, not near misses.
+ */
+const FORGIVE_FROM = 6;
+
+/**
+ * Do these two words differ by at most one letter?
+ *
+ * Substitution, insertion or deletion — `santuary` and `sanctuary`, which is
+ * how a real submission for Lot 307 came in. Stripping `lot` as noise left the
+ * address as two tokens, `307` and the misspelling, so the one word that
+ * distinguishes the job matched nothing and the correct folder tied with four
+ * unrelated apartment 307s.
+ *
+ * Deliberately one letter and no more. Two lets `304` become `307`'s
+ * neighbour in spirit if not in code, and on this estate that is a different
+ * house.
+ */
+export function nearlySame(a: string, b: string): boolean {
+  if (a === b) return true;
+  if (Math.abs(a.length - b.length) > 1) return false;
+
+  // Never numbers, whoever asks. `304` and `307` differ by one character and
+  // are two different houses on the same street; `4` and `14` are two
+  // different lots. The caller guards this too, but a predicate that would
+  // call those a near match has no business existing in this file.
+  if (isNumber(a) || isNumber(b)) return false;
+
+  if (a.length === b.length) {
+    let differences = 0;
+    for (let i = 0; i < a.length; i += 1) {
+      if (a[i] !== b[i] && (differences += 1) > 1) return false;
+    }
+    return differences === 1;
+  }
+
+  const [short, long] = a.length < b.length ? [a, b] : [b, a];
+  let i = 0;
+  while (i < short.length && short[i] === long[i]) i += 1;
+  return short.slice(i) === long.slice(i + 1);
+}
+
+/** Is this token present, allowing one letter's worth of typo in a long word? */
+function present(token: string, have: ReadonlySet<string>): boolean {
+  if (have.has(token)) return true;
+  if (isNumber(token) || token.length < FORGIVE_FROM) return false;
+  for (const candidate of have) {
+    if (!isNumber(candidate) && nearlySame(token, candidate)) return true;
+  }
+  return false;
+}
+
 export function tokenise(value: string): string[] {
   return value
     .toLowerCase()
@@ -76,9 +131,34 @@ export function score(address: string, folderName: string): number {
   for (const token of wanted) {
     const weight = isNumber(token) ? 3 : 1;
     total += weight;
-    if (have.has(token)) got += weight;
+    if (present(token, have)) got += weight;
   }
   return got / total;
+}
+
+/**
+ * Which of an address's tokens actually identify a job.
+ *
+ * `terrace`, `road` and `street` appear in hundreds of folder names and single
+ * out nothing; `finniss`, `sanctuary` and `murrays` appear in one or five and
+ * single out everything. Worked out from the index rather than from a list kept
+ * here, because the index is what changes.
+ *
+ * A folder sharing none of these with the address is not a weak match, it is a
+ * coincidence — `002-Sinks` scored 0.80 against `2 finniss terrace` on the
+ * strength of a `2` and a `terrace`. Weighting the tokens instead of gating on
+ * them was tried and measured worse: it made real matches ambiguous without
+ * removing the coincidences.
+ */
+function distinctiveTokens(wanted: readonly string[], folderNames: readonly string[]): string[] {
+  const ceiling = Math.max(3, Math.floor(folderNames.length * 0.02));
+  const counts = new Map<string, number>();
+  for (const name of folderNames) {
+    for (const token of new Set(tokenise(name))) {
+      counts.set(token, (counts.get(token) ?? 0) + 1);
+    }
+  }
+  return wanted.filter((token) => (counts.get(token) ?? 0) <= ceiling);
 }
 
 export type Resolution =
@@ -100,7 +180,18 @@ export function resolveFolder(
   submission: { address: string; reference?: string },
   folderNames: readonly string[],
 ): Resolution {
+  // A candidate has to share something that identifies the job, not merely
+  // score well on words every second folder contains.
+  const wanted = tokenise(submission.address);
+  const distinctive = distinctiveTokens(wanted, folderNames);
+  const identifies = (folder: string): boolean => {
+    if (distinctive.length === 0) return true;
+    const have = new Set(tokenise(folder));
+    return distinctive.some((token) => present(token, have));
+  };
+
   const scored = folderNames
+    .filter(identifies)
     .map((folder) => ({ folder, confidence: score(submission.address, folder) }))
     .filter((c) => c.confidence >= 0.6)
     .sort((a, b) => b.confidence - a.confidence);
