@@ -297,7 +297,7 @@ export async function review(
     const message = await client.messages
       .stream({
         model,
-        max_tokens: 16000,
+        max_tokens: 32000,
         thinking: { type: 'adaptive' },
         output_config: {
           effort: 'high',
@@ -320,7 +320,19 @@ export async function review(
     try {
       parsed = JSON.parse(text.text) as ReviewResult;
     } catch {
-      return { ok: false, error: 'the answer did not parse as JSON' };
+      // Said apart from a genuine parse failure, because the two need
+      // different fixes and they looked identical from outside. A review of
+      // six Ophir Crescent reported "the answer did not parse as JSON" when
+      // what actually happened was that it ran out of room mid-sentence —
+      // thinking counts against max_tokens, so a long deliberation can leave
+      // too little for the answer.
+      return {
+        ok: false,
+        error:
+          message.stop_reason === 'max_tokens'
+            ? 'the answer was cut off before it finished — the review did not fit in the space allowed'
+            : 'the answer did not parse as JSON',
+      };
     }
 
     return { ok: true, result: parsed, model };

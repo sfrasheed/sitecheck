@@ -58,36 +58,71 @@ const MEDIA: Record<string, string> = {
 const mediaTypeOf = (name: string): string | null =>
   MEDIA[(name.split('.').pop() ?? '').toLowerCase()] ?? null;
 
-/**
- * Turn a photograph the reader cannot take into one it can.
- *
- * Only reached for formats absent from MEDIA, which in practice means the HEIC
- * an iPhone produces unless someone changed a setting. The original bytes are
- * never touched: they are content-addressed and a run that read them has to
- * keep resolving, so this converts on the way past and stores nothing.
- *
- * Returns null on any failure — an unsupported input, a binding that is not
- * available, an empty result. Every one of those means the same thing to the
- * caller, which then refuses in English rather than sending bytes the API will
- * reject. Guessing a media type is what broke this in the first place.
- */
-async function asJpeg(env: Env, body: ReadableStream): Promise<Uint8Array | null> {
-  if (!env.IMAGES) return null;
-  try {
-    const result = await env.IMAGES.input(body).output({ format: 'image/jpeg' });
-    const bytes = new Uint8Array(await result.response().arrayBuffer());
-    return bytes.length > 0 ? bytes : null;
-  } catch {
-    return null;
-  }
-}
-
 function toBase64(bytes: Uint8Array): string {
   let binary = '';
   for (let i = 0; i < bytes.length; i += 0x8000) {
     binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
   }
   return btoa(binary);
+}
+
+/** One-shot stream over bytes already in hand, for the Images binding. */
+function streamOf(bytes: Uint8Array): ReadableStream<Uint8Array> {
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(bytes);
+      controller.close();
+    },
+  });
+}
+
+/**
+ * The longest edge worth sending.
+ *
+ * The reader scales anything larger than this down before looking at it, so a
+ * 3 MB original costs upload and risks the request limit while changing
+ * nothing about what is seen. Farquhar send 2 MB photographs and six of them
+ * came to 16.84 MB — about 22 MB once base64'd, which the API refused outright
+ * with `413 request_too_large`. A whole job went unreviewed because of it.
+ */
+const LONG_EDGE = 1568;
+
+/**
+ * A stored photograph, in a form the reader will take.
+ *
+ * Every photograph goes through this, not just the odd HEIC — downscaling is
+ * the point as much as converting. Two jobs' worth of evidence was lost to
+ * size, and the fix for that is the same call that fixes the format.
+ *
+ * The original bytes are never touched. They are content-addressed and a
+ * review that read them has to keep resolving, so this works on a copy and
+ * stores nothing.
+ *
+ * Returns null only when there is no way to read the file at all: an
+ * unsupported format that would not convert, with no usable original to fall
+ * back on. The caller refuses in English rather than sending bytes the API
+ * will reject.
+ */
+async function forReading(
+  env: Env,
+  name: string,
+  raw: Uint8Array,
+): Promise<{ mediaType: string; bytes: Uint8Array } | null> {
+  if (env.IMAGES) {
+    try {
+      const out = await env.IMAGES.input(streamOf(raw))
+        .transform({ width: LONG_EDGE, height: LONG_EDGE, fit: 'scale-down' })
+        .output({ format: 'image/jpeg' });
+      const bytes = new Uint8Array(await out.response().arrayBuffer());
+      if (bytes.length > 0) return { mediaType: 'image/jpeg', bytes };
+    } catch {
+      // Fall through to the original. A binding that is unavailable or a file
+      // it cannot read must not cost us a photograph we could already send.
+    }
+  }
+  const direct = mediaTypeOf(name);
+  if (direct === null) return null;
+  return { mediaType: direct, bytes: raw };
 }
 
 /** Queue a review. Returns immediately; the answer arrives on the monday item. */
@@ -232,26 +267,16 @@ export async function processReview(env: Env, reviewId: string): Promise<void> {
     const object = await env.PHOTOS.get(`photos/${p.sha256}`);
     if (!object) continue;
 
-    const mediaType = mediaTypeOf(p.name);
-    if (mediaType !== null) {
-      photos.push({
-        name: p.name,
-        mediaType,
-        base64: toBase64(new Uint8Array(await object.arrayBuffer())),
-      });
-      continue;
-    }
-
-    // A format the reader does not take. Convert it rather than making the
-    // builder re-send photographs they already sent. Success is not reported
-    // anywhere: a converted photograph is simply a photograph, and how it
-    // arrived is plumbing the office has no use for.
-    const jpeg = await asJpeg(env, object.body);
-    if (jpeg === null) {
+    const ready = await forReading(env, p.name, new Uint8Array(await object.arrayBuffer()));
+    if (ready === null) {
       unreadable.push(p.name);
       continue;
     }
-    photos.push({ name: p.name, mediaType: 'image/jpeg', base64: toBase64(jpeg) });
+    photos.push({
+      name: p.name,
+      mediaType: ready.mediaType,
+      base64: toBase64(ready.bytes),
+    });
   }
 
   // 5 — something readable to look at. A format the reader cannot open is a
