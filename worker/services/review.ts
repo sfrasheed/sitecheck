@@ -286,16 +286,26 @@ export async function review(
   const model = env.REVIEW_MODEL || 'claude-opus-5';
 
   try {
-    const message = await client.messages.create({
-      model,
-      max_tokens: 16000,
-      thinking: { type: 'adaptive' },
-      output_config: {
-        effort: 'high',
-        format: { type: 'json_schema', schema: REVIEW_SCHEMA },
-      },
-      messages: [{ role: 'user', content }],
-    } as Anthropic.MessageCreateParamsNonStreaming);
+    // Streamed, and not for progress — nothing is watching. A review carrying
+    // a dozen photographs and two PDFs, behind adaptive thinking at high
+    // effort, can spend minutes generating, and an unstreamed request holds one
+    // silent connection open for all of it. Three reviews came back `524`,
+    // which is the gateway giving up rather than the model — it costs the read
+    // and returns nothing, and two more sat in RUNNING forever because the
+    // invocation died waiting. Streaming keeps events arriving, so a slow
+    // answer is merely slow.
+    const message = await client.messages
+      .stream({
+        model,
+        max_tokens: 16000,
+        thinking: { type: 'adaptive' },
+        output_config: {
+          effort: 'high',
+          format: { type: 'json_schema', schema: REVIEW_SCHEMA },
+        },
+        messages: [{ role: 'user', content }],
+      } as Anthropic.MessageStreamParams)
+      .finalMessage();
 
     if (message.stop_reason === 'refusal') {
       return { ok: false, error: 'the model declined to answer this request' };
