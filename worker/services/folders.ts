@@ -104,6 +104,14 @@ function present(token: string, have: ReadonlySet<string>): boolean {
 export function tokenise(value: string): string[] {
   return value
     .toLowerCase()
+    // `7Ferris st Somerton park` arrived with no space after the number. Left
+    // glued, `7ferris` is a token that matches nothing, so the street name —
+    // the only word that identifies the job — never takes part, and the one
+    // Ferris folder in the index was never even offered as a candidate. Split
+    // both sides of every digit/letter boundary, on folder names too, so the
+    // two sides stay comparable.
+    .replace(/(\d)([a-z])/g, '$1 $2')
+    .replace(/([a-z])(\d)/g, '$1 $2')
     .replace(/[^a-z0-9]+/g, ' ')
     .split(' ')
     .filter(Boolean)
@@ -150,16 +158,77 @@ export function score(address: string, folderName: string): number {
  * them was tried and measured worse: it made real matches ambiguous without
  * removing the coincidences.
  */
-function distinctiveTokens(wanted: readonly string[], folderNames: readonly string[]): string[] {
-  const ceiling = Math.max(3, Math.floor(folderNames.length * 0.02));
+function tokenCounts(folderNames: readonly string[]): Map<string, number> {
   const counts = new Map<string, number>();
   for (const name of folderNames) {
     for (const token of new Set(tokenise(name))) {
       counts.set(token, (counts.get(token) ?? 0) + 1);
     }
   }
+  return counts;
+}
+
+function distinctiveTokens(
+  wanted: readonly string[],
+  folderNames: readonly string[],
+  counts: Map<string, number>,
+): string[] {
+  const ceiling = Math.max(3, Math.floor(folderNames.length * 0.02));
   return wanted.filter((token) => (counts.get(token) ?? 0) <= ceiling);
 }
+
+/**
+ * The one word in an address that has to appear in the folder name.
+ *
+ * The rarest of the distinctive words: `ferris` is in one folder name and
+ * `somerton` in a dozen, so `ferris` is the street and `somerton` is the
+ * postcode's worth of other jobs.
+ */
+function identifyingToken(
+  distinctive: readonly string[],
+  counts: Map<string, number>,
+): string | null {
+  if (distinctive.length === 0) return null;
+  return distinctive.reduce((best, token) =>
+    (counts.get(token) ?? 0) < (counts.get(best) ?? 0) ? token : best,
+  );
+}
+
+/**
+ * What to put in front of a person when nothing scored well enough to resolve.
+ *
+ * Ranking the whole index by score is what made this unhelpful: `7Ferris st
+ * Somerton park` was offered five Somerton Park streets, not one of them
+ * Ferris, while `58179 - 9 Ferris Avenue, Somerton Park` — the only Ferris job
+ * there is — sat below the floor and was never shown. Whoever read that had no
+ * way to see the answer was "number 9, not 7".
+ *
+ * So candidates are chosen by the rarest word in the address rather than by
+ * score. `ferris` appears in one folder name and `somerton` in a dozen; the
+ * rare one is the street, and a folder that does not share it is a different
+ * job however well it scores on `street` and `park`.
+ *
+ * This list never resolves anything. It exists so the person the submission
+ * has been handed to can see the near miss.
+ */
+function worthOffering(
+  address: string,
+  distinctive: readonly string[],
+  folderNames: readonly string[],
+  counts: Map<string, number>,
+): string[] {
+  const rarest = identifyingToken(distinctive, counts);
+  if (rarest === null) return [];
+  return folderNames
+    .filter((folder) => present(rarest, new Set(tokenise(folder))))
+    .map((folder) => ({ folder, confidence: score(address, folder) }))
+    .sort((a, b) => b.confidence - a.confidence)
+    .slice(0, 5)
+    .map((c) => c.folder);
+}
+
+/** Both sides stripped to letters and digits, for reading a typed reference. */
+const bare = (value: string): string => value.toLowerCase().replace(/[^a-z0-9]/g, '');
 
 export type Resolution =
   | { status: 'resolved'; folder: string; confidence: number }
@@ -182,12 +251,25 @@ export function resolveFolder(
 ): Resolution {
   // A candidate has to share something that identifies the job, not merely
   // score well on words every second folder contains.
+  const counts = tokenCounts(folderNames);
   const wanted = tokenise(submission.address);
-  const distinctive = distinctiveTokens(wanted, folderNames);
+  const distinctive = distinctiveTokens(wanted, folderNames, counts);
+  // The rarest word in the address is the street, and it is not optional.
+  //
+  // Sharing *any* distinctive word was not enough. `7Ferris st Somerton park`
+  // scored 0.857 against `7 Bungey Street Somerton Park` on the strength of a
+  // 7, a street and a suburb, against 0.43 for the one Ferris job there is —
+  // so it resolved, confidently, to the wrong street. Requiring the rarest
+  // word instead means a folder without `ferris` in it is not a weak match for
+  // a Ferris address, it is a different job.
+  //
+  // This costs recall and it is the right direction to spend it: an address
+  // whose street name appears nowhere in the index now goes to a person
+  // instead of being answered from the suburb.
+  const required = identifyingToken(distinctive, counts);
   const identifies = (folder: string): boolean => {
-    if (distinctive.length === 0) return true;
-    const have = new Set(tokenise(folder));
-    return distinctive.some((token) => present(token, have));
+    if (required === null) return true;
+    return present(required, new Set(tokenise(folder)));
   };
 
   const scored = folderNames
@@ -196,33 +278,60 @@ export function resolveFolder(
     .filter((c) => c.confidence >= 0.6)
     .sort((a, b) => b.confidence - a.confidence);
 
-  // The reference is a tripwire, never a key. If the builder's reference names
-  // a folder outright, it has to be the same folder the address found.
-  const reference = (submission.reference ?? '').trim();
-  const referenceFolder =
-    reference.length >= 4
-      ? folderNames.find((f) =>
-          f.toLowerCase().replace(/[^a-z0-9]/g, '').includes(
-            reference.toLowerCase().replace(/[^a-z0-9]/g, ''),
-          ),
-        )
-      : undefined;
+  /**
+   * Does this folder's name contain the reference the builder typed?
+   *
+   * Read ONLY against folders the address already found. Turned loose on the
+   * whole index it was worse than useless: `Res 2` bares to `res2`, which is
+   * in thirty folder names, and the first of them was picked — so a submission
+   * for 21 Chopin Road, Somerton Park was reported as contradicted by a job on
+   * Bowker Street, Warradale. A reference cannot name a job on its own. It can
+   * only choose between jobs the address has already narrowed to.
+   */
+  const referenceKey = bare((submission.reference ?? '').trim());
+  const namesReference = (folder: string): boolean =>
+    referenceKey.length >= 4 && bare(folder).includes(referenceKey);
 
   if (scored.length === 0) {
-    return { status: 'unresolved', candidates: referenceFolder ? [referenceFolder] : [] };
+    return {
+      status: 'unresolved',
+      candidates: worthOffering(submission.address, distinctive, folderNames, counts),
+    };
   }
 
   const best = scored[0]!;
 
-  if (referenceFolder && referenceFolder !== best.folder) {
-    return { status: 'conflict', folder: best.folder, referenceFolder };
+  // Folders the address cannot choose between. `6 Ophir Crescent Seacliff Park`
+  // scores 1.00 against both RES. 1 and RES. 2 of the same build, because the
+  // address simply does not say which residence it is.
+  const tied = scored.filter((c) => best.confidence - c.confidence < 0.15);
+
+  if (tied.length > 1) {
+    // Here the reference is not a tripwire, it is the answer. The address has
+    // done all it can and stopped between two jobs; `Res 2` says which. That
+    // is disambiguation, not contradiction, and it used to be reported as a
+    // conflict and stop the review dead.
+    const picked = tied.filter((c) => namesReference(c.folder));
+    if (picked.length === 1) {
+      return { status: 'resolved', folder: picked[0]!.folder, confidence: picked[0]!.confidence };
+    }
+    // More than one match still narrows it. `Res 2` against the four Chopin
+    // Road folders leaves the two that are the same address twice over —
+    // which is the useful thing to show, because that is a duplicate in
+    // SharePoint and not a decision anyone can make from here.
+    return {
+      status: 'ambiguous',
+      candidates: (picked.length > 1 ? picked : tied).slice(0, 5).map((c) => c.folder),
+    };
   }
 
-  // Two folders scoring alike is the Bolivar shape — twenty near-identical
-  // names where one token decides. Never guess between them.
-  const runnerUp = scored[1];
-  if (runnerUp && best.confidence - runnerUp.confidence < 0.15) {
-    return { status: 'ambiguous', candidates: scored.slice(0, 5).map((c) => c.folder) };
+  // The address was decisive. A reference pointing at a DIFFERENT job that the
+  // address also matched is the contradiction worth stopping for: two
+  // submissions for different lots both carried `KW16250`, the address named
+  // `KW16277`, and the photographs had been recycled from the first.
+  const contradiction = scored.find((c) => c.folder !== best.folder && namesReference(c.folder));
+  if (contradiction) {
+    return { status: 'conflict', folder: best.folder, referenceFolder: contradiction.folder };
   }
 
   return { status: 'resolved', folder: best.folder, confidence: best.confidence };

@@ -368,8 +368,11 @@ async function resolve(
             // it, and they were being computed and thrown away.
             `${outcome.candidates.length} folders matched equally well — ${outcome.candidates.join('; ')}`
           : outcome.candidates.length > 0
-            ? `nothing matched the address; the reference points at ${outcome.candidates.join('; ')}`
-            : 'nothing matched';
+            ? // Near misses on the street name, not reference hits. `7Ferris st
+              // Somerton park` has no folder, and saying so alongside `9 Ferris
+              // Avenue` is what lets someone see the number is wrong.
+              `nothing matched the address; the nearest jobs on that street are ${outcome.candidates.join('; ')}`
+            : 'nothing matched the address, and no job in the index is on that street';
 
   await run(
     env.DB,
