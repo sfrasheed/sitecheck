@@ -147,6 +147,15 @@ wrangler secret put WEBHOOK_TOKEN
 
 Locally they live in `.dev.vars`, which is gitignored.
 
+**`ANTHROPIC_API_KEY` has to be created inside a workspace**, not from the top-level API keys page.
+An organisation-level key authenticates fine and then fails every request with *"This API key is
+not scoped to a workspace"* — a 400, not a 401, so it looks nothing like a key problem. Console →
+Settings → Workspaces → open the workspace → create the key there.
+
+Worth knowing what a dead key costs here, because it has happened: the key was revoked on 6 October
+2026 and nothing judged a submission for four weeks. `GET /api/health` now carries a `reviews`
+block that says so in English — check it first when the board fills with "No review".
+
 ## Related
 
 [`sfscreeningapp`](https://github.com/sfrasheed/sfscreeningapp) — Deep Screen, which screens sales
