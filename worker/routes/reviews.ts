@@ -125,6 +125,66 @@ async function forReading(
   return { mediaType: direct, bytes: raw };
 }
 
+/**
+ * How the reviewing itself is going.
+ *
+ * `apiKeyConfigured: true` was true and useless for four weeks. The key was
+ * revoked on 6 October, every review since came back `401 invalid x-api-key`,
+ * and health went on reporting that a key was configured — which it was. The
+ * board filled with "No review" and nothing anywhere said why.
+ *
+ * So health now reports what actually happened to the last few reviews rather
+ * than what is present in the environment. A key that exists and is refused
+ * is the same as no key at all, and only one of those was visible.
+ */
+export async function reviewHealth(env: Env): Promise<{
+  done: number;
+  refused: number;
+  failed: number;
+  lastDone: string | null;
+  concern: string | null;
+}> {
+  const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+  const rows = await all<{ status: string; n: number }>(
+    env.DB,
+    `SELECT status, COUNT(*) AS n FROM reviews WHERE requested_at > ? GROUP BY status`,
+    since,
+  );
+  const count = (status: string) => rows.find((r) => r.status === status)?.n ?? 0;
+  const done = count('DONE');
+  const refused = count('REFUSED');
+  const failed = count('FAILED');
+
+  const last = await one<{ finished_at: string | null }>(
+    env.DB,
+    `SELECT MAX(finished_at) AS finished_at FROM reviews WHERE status = 'DONE'`,
+  );
+  const lastDone = last?.finished_at ?? null;
+
+  // The most recent failure, said in English. An API error string is not
+  // English, but "the key is being refused" is, and it is the one fact that
+  // decides whether anyone should be looking at the submissions at all.
+  const recent = await one<{ refusal: string | null }>(
+    env.DB,
+    `SELECT refusal FROM reviews WHERE status = 'FAILED' ORDER BY requested_at DESC LIMIT 1`,
+  );
+  const latest = recent?.refusal ?? '';
+
+  let concern: string | null = null;
+  if (/401|authentication_error|invalid x-api-key/i.test(latest)) {
+    concern =
+      'the Anthropic key is being refused — every review is failing with an authentication error, ' +
+      'and no submission has been judged since it started. Rotate the key and set it with ' +
+      '`wrangler secret put ANTHROPIC_API_KEY`';
+  } else if (failed > 0 && done === 0) {
+    concern = `every review in the last seven days failed (${failed}) and none completed`;
+  } else if (failed > done && failed > 2) {
+    concern = `reviews are failing more often than they finish — ${failed} failed against ${done} done in seven days`;
+  }
+
+  return { done, refused, failed, lastDone, concern };
+}
+
 /** Queue a review. Returns immediately; the answer arrives on the monday item. */
 export async function startReview(env: Env, actor: string, submissionId: string): Promise<Response> {
   const submission = await one<SubmissionRow>(

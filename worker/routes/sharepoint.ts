@@ -10,6 +10,7 @@
 import type { Env } from '../env.ts';
 import { badRequest, ok } from '../lib/http.ts';
 import { resolveFolder } from '../services/folders.ts';
+import { reconsiderUnresolved } from './intake.ts';
 import {
   indexState,
   knownFolders,
@@ -149,6 +150,11 @@ export async function receiveFolders(request: Request, env: Env): Promise<Respon
   });
   const after = await indexState(env);
 
+  // New folders are the only thing that can change a failed match, so this is
+  // the moment to try the submissions that never found one. Nothing is
+  // scheduled and no cadence lives here — the push is the trigger.
+  const reconsidered = added > 0 ? await reconsiderUnresolved(env) : null;
+
   // Report the shape of the change, not just success — and say plainly when the
   // shape is wrong. A push that carries a fraction of the folders, or the same
   // folders forever, is the signature of a capped or narrowed flow, and it
@@ -161,6 +167,7 @@ export async function receiveFolders(request: Request, env: Env): Promise<Respon
     added,
     refreshedAt: after.refreshedAt,
     concern: after.concern,
+    reconsidered,
   });
 }
 

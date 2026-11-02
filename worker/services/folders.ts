@@ -180,18 +180,50 @@ function distinctiveTokens(
 /**
  * The one word in an address that has to appear in the folder name.
  *
- * The rarest of the distinctive words: `ferris` is in one folder name and
- * `somerton` in a dozen, so `ferris` is the street and `somerton` is the
- * postcode's worth of other jobs.
+ * The rarest of the distinctive words — `ferris` is in one folder name and
+ * `somerton` in a dozen, so `ferris` is the street and `somerton` is a
+ * suburb's worth of other jobs.
+ *
+ * **It has to be a word some folder actually has.** Requiring the rarest word
+ * outright was wrong in a way that took a month to notice: a real postcode is
+ * rarer than any street, because no folder name carries one. `73A Willcocks
+ * Avenue Seaton 5023` made `5023` the required word, no folder could satisfy
+ * it, and the submission was reported as having nothing in the index on that
+ * street — while `MR110136 Peters - 73A Willcocks Avenue, Seaton` sat there.
+ * Drop the postcode and the same address resolved at once. Every address typed
+ * with a postcode on it was guaranteed to fail.
+ *
+ * So a word nothing in the index has is not an identifier, it is noise we were
+ * not told about in advance — and the index is what says which is which. State
+ * abbreviations, unit suffixes and whatever is typed next all behave the same
+ * way, without needing a list here that someone has to remember to extend.
+ *
+ * Fuzzy matches count. `santuary` appears in no folder name either, but it
+ * reaches `sanctuary` and so it does identify a job.
  */
 function identifyingToken(
   distinctive: readonly string[],
+  folderNames: readonly string[],
   counts: Map<string, number>,
 ): string | null {
-  if (distinctive.length === 0) return null;
-  return distinctive.reduce((best, token) =>
-    (counts.get(token) ?? 0) < (counts.get(best) ?? 0) ? token : best,
-  );
+  let best: string | null = null;
+  let bestCount = Infinity;
+
+  for (const token of distinctive) {
+    // A literal count above zero settles it without scanning anything.
+    let found = counts.get(token) ?? 0;
+    if (found === 0) {
+      for (const name of folderNames) {
+        if (present(token, new Set(tokenise(name)))) found += 1;
+      }
+    }
+    if (found === 0) continue; // nothing has it, so it identifies nothing
+    if (found < bestCount) {
+      best = token;
+      bestCount = found;
+    }
+  }
+  return best;
 }
 
 /**
@@ -217,7 +249,7 @@ function worthOffering(
   folderNames: readonly string[],
   counts: Map<string, number>,
 ): string[] {
-  const rarest = identifyingToken(distinctive, counts);
+  const rarest = identifyingToken(distinctive, folderNames, counts);
   if (rarest === null) return [];
   return folderNames
     .filter((folder) => present(rarest, new Set(tokenise(folder))))
@@ -266,7 +298,7 @@ export function resolveFolder(
   // This costs recall and it is the right direction to spend it: an address
   // whose street name appears nowhere in the index now goes to a person
   // instead of being answered from the suburb.
-  const required = identifyingToken(distinctive, counts);
+  const required = identifyingToken(distinctive, folderNames, counts);
   const identifies = (folder: string): boolean => {
     if (required === null) return true;
     return present(required, new Set(tokenise(folder)));

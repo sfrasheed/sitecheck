@@ -99,6 +99,16 @@ Success is reported nowhere: a converted photograph is a photograph. Failure ref
 naming the files, because the alternative is sending bytes the API rejects — which is what used to
 happen, and it took the whole review down silently.
 
+## Why health reports what reviewing did, not what is configured for it
+
+`apiKeyConfigured: true` was true and useless for four weeks. The Anthropic key was revoked on
+6 October, every review since came back `401 invalid x-api-key`, the board filled with "No review",
+and health went on reporting that a key was configured — which it was.
+
+So `GET /api/health` carries a `reviews` block: what the last seven days did, when a review last
+finished, and a `concern` in English when the pattern is wrong. A key that exists and is refused is
+the same as no key at all, and only one of those used to be visible.
+
 ## Why the folder index has to say when it is lying
 
 The index is a copy of SharePoint pushed in hourly by a flow. Being a copy, it lags — and being a

@@ -22,7 +22,13 @@ import { fail, HttpError, ok } from './lib/http.ts';
 import type { Env } from './env.ts';
 import { getKbFile, listKb, putKbFile, retireKbFile } from './routes/kb.ts';
 import { chooseFolder, ingest, receiveWebhook } from './routes/intake.ts';
-import { getReview, processReview, startReview, type ReviewMessage } from './routes/reviews.ts';
+import {
+  getReview,
+  processReview,
+  reviewHealth,
+  startReview,
+  type ReviewMessage,
+} from './routes/reviews.ts';
 import { previewResolution, receiveFolders } from './routes/sharepoint.ts';
 import { indexState, secretsMatch } from './services/sharepoint.ts';
 
@@ -45,6 +51,8 @@ const routes: Route[] = [
         // without erroring: an index nobody is pushing to, and a fetch flow
         // that was never wired up.
         folderIndex: index,
+        // What the reviewing is actually doing, not what is configured for it.
+        reviews: await reviewHealth(env),
         documentFetch: env.FLOW_FETCH_URL ? 'configured' : 'not configured',
         webhook: env.WEBHOOK_TOKEN ? 'configured' : 'not configured',
         autoReview: env.AUTO_REVIEW === 'on' ? 'on' : 'off',

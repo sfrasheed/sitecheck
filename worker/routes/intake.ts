@@ -329,11 +329,85 @@ async function duplicateSubmissions(
   );
 }
 
+/**
+ * Try the submissions that never found a folder, now that more folders exist.
+ *
+ * Job folders are often filed after the call-up arrives, not before. `139
+ * Lochside drive West lakes` matched nothing on the day and resolves cleanly
+ * now — the folder turned up later and nothing ever looked again, because
+ * ingest takes custody exactly once. Every one of those sat unresolved
+ * permanently for want of a second attempt.
+ *
+ * Driven by the hourly index push, and only when it actually brought something
+ * new: new folders are the only thing that can change the answer, so there is
+ * no cadence logic here and nothing to schedule.
+ *
+ * Capped, because this runs inside one Worker invocation and every query is a
+ * subrequest — the lesson the folder index already taught. Oldest first, so a
+ * backlog drains in order rather than the same recent few being retried.
+ *
+ * A submission that becomes resolvable is reviewed if reviewing is automatic,
+ * which is simply the automatic path arriving late. A submission that is still
+ * unresolved is left exactly as it was.
+ */
+export async function reconsiderUnresolved(env: Env, limit = 25): Promise<{
+  tried: number;
+  resolved: number;
+  queued: number;
+}> {
+  const waiting = await all<SubmissionRow & { monday_item_id: string }>(
+    env.DB,
+    `SELECT id, address, reference, resolution, folder, monday_item_id
+       FROM submissions
+      WHERE resolution IN ('unresolved', 'ambiguous', 'pending')
+      ORDER BY received_at
+      LIMIT ?`,
+    limit,
+  );
+  if (waiting.length === 0) return { tried: 0, resolved: 0, queued: 0 };
+
+  // Read once and hand it down. Re-reading 1,600 folder names per submission
+  // is how the index push spent its whole subrequest budget and died.
+  const folders = await knownFolders(env);
+  if (folders.length === 0) return { tried: 0, resolved: 0, queued: 0 };
+
+  let resolved = 0;
+  let queued = 0;
+  for (const submission of waiting) {
+    const outcome = await resolve(
+      env,
+      submission.id,
+      submission.address ?? '',
+      submission.reference ?? '',
+      folders,
+    );
+    if ((outcome as { status?: string }).status !== 'resolved') continue;
+    resolved += 1;
+
+    if (env.AUTO_REVIEW === 'on') {
+      const reviewId = id('rev');
+      await run(
+        env.DB,
+        `INSERT INTO reviews (id, submission_id, status, requested_by, requested_at)
+         VALUES (?, ?, 'QUEUED', ?, ?)`,
+        reviewId,
+        submission.id,
+        'automatic — the job folder appeared after the submission did',
+        nowIso(),
+      );
+      await env.REVIEWS.send({ reviewId });
+      queued += 1;
+    }
+  }
+  return { tried: waiting.length, resolved, queued };
+}
+
 async function resolve(
   env: Env,
   submissionId: string,
   address: string,
   reference: string,
+  known?: readonly string[],
 ): Promise<unknown> {
   if (address.trim() === '') {
     await run(
@@ -345,7 +419,7 @@ async function resolve(
     return { status: 'unresolved', detail: 'the submission carried no address' };
   }
 
-  const folders = await knownFolders(env);
+  const folders = known ?? (await knownFolders(env));
   if (folders.length === 0) {
     await run(
       env.DB,
