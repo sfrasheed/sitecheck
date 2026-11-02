@@ -18,6 +18,7 @@ import { review, type ReviewResult } from '../services/review.ts';
 import { failureBody, refusalBody, updateBody, whySummary } from '../services/report.ts';
 import { fetchJobDocuments } from '../services/sharepoint.ts';
 import { fileVerdict, postUpdate } from '../services/monday.ts';
+import * as notice from '../services/notice.ts';
 
 export type ReviewMessage = { reviewId: string };
 
@@ -142,6 +143,7 @@ export async function reviewHealth(env: Env): Promise<{
   refused: number;
   failed: number;
   lastDone: string | null;
+  notices: { configured: boolean; sent: number; held: number; lastHeld: string | null };
   concern: string | null;
 }> {
   const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
@@ -170,7 +172,30 @@ export async function reviewHealth(env: Env): Promise<{
   );
   const latest = recent?.refusal ?? '';
 
+  // Whether anyone is actually being told. A notice path that silently stopped
+  // working would hide the very thing it exists to surface.
+  const post = await all<{ sent: number; n: number }>(
+    env.DB,
+    `SELECT sent, COUNT(*) AS n FROM notice WHERE at > ? GROUP BY sent`,
+    since,
+  );
+  const notices = {
+    configured: notice.recipients(env).length > 0,
+    sent: post.find((r) => r.sent === 1)?.n ?? 0,
+    held: post.find((r) => r.sent === 0)?.n ?? 0,
+    lastHeld:
+      (
+        await one<{ held: string }>(
+          env.DB,
+          `SELECT held FROM notice WHERE sent = 0 AND held != '' ORDER BY at DESC LIMIT 1`,
+        )
+      )?.held ?? null,
+  };
+
   let concern: string | null = null;
+  if (!notices.configured) {
+    concern = 'nobody is configured to be told when a submission cannot be judged (NOTICE_TO is empty)';
+  }
   if (/401|authentication_error|invalid x-api-key/i.test(latest)) {
     concern =
       'the Anthropic key is being refused — every review is failing with an authentication error, ' +
@@ -182,7 +207,7 @@ export async function reviewHealth(env: Env): Promise<{
     concern = `reviews are failing more often than they finish — ${failed} failed against ${done} done in seven days`;
   }
 
-  return { done, refused, failed, lastDone, concern };
+  return { done, refused, failed, lastDone, notices, concern };
 }
 
 /** Queue a review. Returns immediately; the answer arrives on the monday item. */
@@ -211,6 +236,119 @@ export async function startReview(env: Env, actor: string, submissionId: string)
   return ok({ reviewId, status: 'QUEUED', itemId: submission.monday_item_id });
 }
 
+/**
+ * How long one unchanged fault stays quiet before it is worth saying again.
+ *
+ * Not silence: a credential refused for twenty-six days should keep reminding
+ * somebody. Four times a day does that; twenty-five identical emails in an
+ * afternoon teaches a person to filter the sender, after which the next
+ * genuine one is never read either.
+ */
+const SAY_AGAIN_AFTER_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * Tell somebody a submission could not be judged, and write down that we did.
+ *
+ * ⛔ Never allowed to decide whether the review was recorded. Every path here
+ * is wrapped and swallowed — the same rule the board write follows, for the
+ * same reason: a mail server having a bad morning must not turn a recorded
+ * refusal into no record at all.
+ *
+ * A refusal is always sent. Each one is a different site and a different
+ * person's afternoon. A failure is the app being broken, which is one piece of
+ * news however many submissions hit it, so repeats of one cause are held and
+ * the holding is recorded.
+ */
+async function tell(
+  env: Env,
+  reviewId: string,
+  kind: 'REFUSED' | 'FAILED',
+  reason: string,
+): Promise<void> {
+  try {
+    if (notice.recipients(env).length === 0) return;
+
+    const about = await one<{ address: string | null; company: string | null; item: string }>(
+      env.DB,
+      `SELECT s.address AS address, s.company AS company, s.monday_item_id AS item
+         FROM reviews r JOIN submissions s ON s.id = r.submission_id
+        WHERE r.id = ?`,
+      reviewId,
+    );
+    const cause = notice.causeOf(kind, reason);
+
+    if (kind === 'FAILED') {
+      const recently = await one<{ id: string }>(
+        env.DB,
+        `SELECT id FROM notice
+          WHERE cause = ? AND sent = 1 AND at > ?
+            AND at > COALESCE((SELECT MAX(finished_at) FROM reviews WHERE status = 'DONE'), '')
+          LIMIT 1`,
+        cause,
+        new Date(Date.now() - SAY_AGAIN_AFTER_MS).toISOString(),
+      );
+      if (recently) {
+        await run(
+          env.DB,
+          `INSERT INTO notice (id, review_id, kind, cause, sent, held, at) VALUES (?, ?, ?, ?, 0, ?, ?)`,
+          id('ntc'), reviewId, kind, cause,
+          'the same fault was already reported and nothing has succeeded since',
+          nowIso(),
+        );
+        return;
+      }
+    }
+
+    const where = about?.address?.trim() || about?.company?.trim() || 'a submission';
+    const link = about
+      ? `https://steedformaus.monday.com/boards/${env.MONDAY_BOARD_ID}/pulses/${about.item}`
+      : '';
+
+    const subject = kind === 'REFUSED'
+      ? `Site Check could not review ${where}`
+      : `Site Check did not finish a review — ${where}`;
+
+    const body = kind === 'REFUSED'
+      ? [
+          `No verdict was reached for ${where}` + (about?.company ? ` (${about.company})` : '') + '.',
+          '',
+          reason,
+          '',
+          'Nothing was judged, so this one needs a person before the measure can be booked.',
+          link,
+          '',
+        ].join('\n')
+      : [
+          `A review of ${where}` + (about?.company ? ` (${about.company})` : '') + ' did not complete.',
+          '',
+          'This is a fault on our side, not a problem with the submission — nothing needs',
+          'chasing with the builder. The submission is still held and can be reviewed again.',
+          '',
+          `What went wrong: ${reason.slice(0, 300)}`,
+          '',
+          link,
+          '',
+        ].join('\n');
+
+    let sent = false;
+    let held = '';
+    try {
+      sent = await notice.send(env, subject, body);
+      if (!sent) held = 'nobody is configured to receive notices';
+    } catch (e) {
+      held = String(e).slice(0, 200);
+    }
+    await run(
+      env.DB,
+      `INSERT INTO notice (id, review_id, kind, cause, sent, held, at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      id('ntc'), reviewId, kind, cause, sent ? 1 : 0, held, nowIso(),
+    );
+  } catch (e) {
+    // Swallowed on purpose. See the note above.
+    console.log('[notice] could not be sent or recorded:', String(e).slice(0, 200));
+  }
+}
+
 async function refuse(env: Env, reviewId: string, itemId: string, reason: string): Promise<void> {
   await run(
     env.DB,
@@ -234,6 +372,10 @@ async function refuse(env: Env, reviewId: string, itemId: string, reason: string
       reviewId,
     );
   }
+
+  // Last, and after the record is safe. The board is where it belongs; this
+  // is how somebody finds out without going to look.
+  await tell(env, reviewId, 'REFUSED', reason);
 }
 
 /**
@@ -402,6 +544,7 @@ export async function processReview(env: Env, reviewId: string): Promise<void> {
         reviewId,
       );
     }
+    await tell(env, reviewId, 'FAILED', answer.error);
     return;
   }
 

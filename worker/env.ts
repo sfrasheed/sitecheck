@@ -84,4 +84,26 @@ export interface Env {
 
   /** Shared secret the Worker presents to the document fetch flow. */
   readonly FLOW_FETCH_TOKEN?: string;
+
+  /**
+   * Telling somebody when a submission could not be judged.
+   *
+   * The same Entra app registration Deep Screen sends its internal notice on,
+   * so there is no second consent and no second credential: the three secrets
+   * are simply set on this Worker too. Absent means no notice is attempted and
+   * the holding is recorded, which is the safe default — a Worker that cannot
+   * mail must still record refusals.
+   */
+  readonly GRAPH_TENANT_ID?: string;
+  readonly MAIL_CLIENT_ID?: string;
+  readonly MAIL_CLIENT_SECRET?: string;
+
+  /**
+   * Who is told, and from which mailbox. Configuration rather than arguments,
+   * so no caller and nothing a builder typed can address a notice anywhere.
+   * The mailbox must be one the tenant's Application Access Policy permits
+   * that app registration.
+   */
+  readonly NOTICE_TO?: string;
+  readonly NOTICE_FROM?: string;
 }

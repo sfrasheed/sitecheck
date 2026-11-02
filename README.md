@@ -99,6 +99,38 @@ Success is reported nowhere: a converted photograph is a photograph. Failure ref
 naming the files, because the alternative is sending bytes the API rejects — which is what used to
 happen, and it took the whole review down silently.
 
+## Being told when a submission could not be judged
+
+The board carries a "No review" notice on the item. That is the right place for it and it is not
+enough — nobody watches a board column, and a refused API key went unnoticed for twenty-six days.
+So every refusal and every failure also emails.
+
+It runs on the same Entra app registration Deep Screen sends its internal notice on, so there is no
+second consent and no second credential — the same three secrets, set on this Worker too:
+
+```bash
+wrangler secret put GRAPH_TENANT_ID
+wrangler secret put MAIL_CLIENT_ID
+wrangler secret put MAIL_CLIENT_SECRET
+```
+
+`NOTICE_TO` and `NOTICE_FROM` are vars in `wrangler.jsonc`, not secrets. The sending mailbox has to
+be one the tenant's Application Access Policy permits that app registration.
+
+Three rules it keeps, after Deep Screen's notice:
+
+- **It takes no recipient argument.** Who is told is configuration, so nothing a builder typed can
+  address one of these anywhere.
+- **It carries no verdict** — here that is trivially true, since not having one is the subject.
+- **It never decides whether the review was recorded.** Every path is swallowed and written to
+  `notice`, so a mail server having a bad morning cannot turn a recorded refusal into no record.
+
+A refusal is always sent: each is a different site needing a different person. A failure is the app
+being broken, which is one piece of news however many submissions hit it, so repeats of one cause
+are held for six hours and the holding is recorded in `notice` — "we were not told" can be answered
+either way. Causes are compared on the status and error type, so two 401s with different request
+ids collapse while a 401 and a 413 do not.
+
 ## Why health reports what reviewing did, not what is configured for it
 
 `apiKeyConfigured: true` was true and useless for four weeks. The Anthropic key was revoked on

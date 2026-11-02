@@ -29,6 +29,16 @@
 		// columns this Worker may write. Named here rather than looked up:
 		// a column being present on the board is not the same as it being
 		// ours to write.
+		/**
+		 * Who hears when a submission could not be judged, and from where.
+		 *
+		 * Here rather than in the database because Site Check has no user
+		 * interface to change it in, and a list in configuration is reviewable
+		 * in git. The credentials are secrets, not vars.
+		 */
+		"NOTICE_TO": "srasheed@steedform.com",
+		"NOTICE_FROM": "sales@steedform.com",
+
 		"MONDAY_BOARD_ID": "5031038127",
 		"VERDICT_COLUMN": "color_mm6wkf5h",
 		"WHY_COLUMN": "long_text_mm6ws202"
